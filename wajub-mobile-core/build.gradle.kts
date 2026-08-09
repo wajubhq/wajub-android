@@ -32,6 +32,16 @@ mavenPublishing {
     publishToMavenCentral()
     signAllPublications()
 
+    // Dokka's bundled ASM can't read the `PermittedSubclasses` attribute Kotlin
+    // 2.x emits for sealed classes, so KDoc generation crashes — ship an empty
+    // javadoc jar instead (satisfies Central's requirement without invoking Dokka).
+    configure(
+        com.vanniktech.maven.publish.KotlinJvm(
+            javadocJar = com.vanniktech.maven.publish.JavadocJar.Empty(),
+            sourcesJar = true,
+        )
+    )
+
     coordinates(group.toString(), "wajub-mobile-core", version.toString())
 
     pom {

@@ -49,6 +49,19 @@ mavenPublishing {
     publishToMavenCentral()
     signAllPublications()
 
+    // Dokka's bundled ASM can't read the `PermittedSubclasses` attribute Kotlin
+    // 2.x emits for sealed classes, so KDoc generation crashes — ship an empty
+    // javadoc jar instead (satisfies Central's requirement without invoking Dokka).
+    configure(
+        com.vanniktech.maven.publish.AndroidSingleVariantLibrary(
+            variant = "release",
+            sourcesJar = true,
+            // Dokka crashes on this project regardless of the javadocJar strategy used
+            // (see comment above) — Android AAR publications don't strictly require one.
+            publishJavadocJar = false,
+        )
+    )
+
     coordinates(group.toString(), "wajub-mobile-compose", version.toString())
 
     pom {
