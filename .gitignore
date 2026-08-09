@@ -1,0 +1,11 @@
+.gradle/
+build/
+*.iml
+.idea/
+local.properties
+
+.env
+.env.local
+
+.DS_Store
+*.swp
