@@ -40,6 +40,39 @@ class PayClient(
             processBlocking(token, channel, data)
         }
 
+    /**
+     * POST /pay/client-session — opens (or re-serves) a PSP-hosted checkout for
+     * [channel]. Only non-null fields are sent. Idempotent server-side: calling it
+     * again returns the same open session unless [restart] is true.
+     */
+    suspend fun startClientSession(
+        token: String,
+        channel: String,
+        email: String? = null,
+        name: String? = null,
+        returnUrl: String? = null,
+        restart: Boolean = false,
+    ): RawProcessResponse =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val payload = JSONObject().put("channel", channel)
+            email?.takeIf { it.isNotBlank() }?.let { payload.put("email", it) }
+            name?.takeIf { it.isNotBlank() }?.let { payload.put("name", it) }
+            returnUrl?.takeIf { it.isNotBlank() }?.let { payload.put("return_url", it) }
+            if (restart) payload.put("restart", true)
+            mapProcessBody(request("POST", token, "/pay/client-session", payload))
+        }
+
+    /**
+     * POST /pay/client-session/complete — the backend verifies the session with
+     * the PSP by its own reference (the client never sends a PSP reference).
+     * 200 complete, 202 still pending, 402 failed (thrown as [WajubError]).
+     */
+    suspend fun completeClientSession(token: String, clientSessionId: String): RawProcessResponse =
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+            val payload = JSONObject().put("client_session_id", clientSessionId)
+            mapProcessBody(request("POST", token, "/pay/client-session/complete", payload))
+        }
+
     suspend fun cancel(token: String): CancelResult =
         kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
             cancelBlocking(token)
@@ -169,6 +202,7 @@ class PayClient(
                 sdk = ch.optString("sdk").ifBlank { null },
                 publishableKey = ch.optString("publishable_key").ifBlank { null },
                 requiredFields = jsonStringList(ch.optJSONArray("required_fields")),
+                clientSession = ch.optBoolean("client_session", false),
             )
         }
         return SdkConfig(channels)

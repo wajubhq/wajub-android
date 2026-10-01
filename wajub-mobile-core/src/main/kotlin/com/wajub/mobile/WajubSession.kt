@@ -55,11 +55,68 @@ class WajubSession internal constructor(
         return PaymentMapper.mapProcessResponse(raw, "card")
     }
 
+    /**
+     * Card on a `hosted_redirect` channel (PayPal, Mollie, Paddle, Kkiapay, FedaPay,
+     * PayDunya, CinetPay): returns [PaymentResult.RequiresAction] redirecting to the
+     * PSP's own card page. [billing] must carry every field the channel's
+     * `requiredFields` lists (see [PaymentMapper.hostedCardFields]).
+     */
+    suspend fun payCardHostedRedirect(channelSlug: String, billing: Map<String, String> = emptyMap()): PaymentResult {
+        loadSession()
+        val raw = client.process(token, channelSlug, PaymentMapper.buildHostedCardRequest(billing))
+        return PaymentMapper.mapProcessResponse(raw, "card")
+    }
+
+    /**
+     * One-tap wallet channel (`sdk-config` `form`, no `requiredFields`, channel type
+     * `wallet` — e.g. Djamo): returns [PaymentResult.RequiresAction] redirecting to the
+     * wallet's payment page, which opens the wallet app.
+     */
+    suspend fun payWallet(channelSlug: String): PaymentResult {
+        loadSession()
+        return process(channelSlug, emptyMap())
+    }
+
     /** Generic process call for advanced integrations (Stripe adapter, etc.). */
     suspend fun process(channel: String, data: Map<String, Any?>): PaymentResult {
         val raw = client.process(token, channel, data)
         val methodType = sessionMethodType(channel)
         return PaymentMapper.mapProcessResponse(raw, methodType)
+    }
+
+    /**
+     * Opens (or re-serves) a PSP-hosted checkout for [channel] — for channels whose
+     * `sdk-config` entry has `clientSession == true` (Paystack / Flutterwave cards).
+     * Returns [PaymentResult.RequiresAction] with [com.wajub.mobile.model.ActionKind.ClientSession]
+     * and a [com.wajub.mobile.model.ClientSession]: open its `hostedUrl` in Custom Tabs
+     * (or launch the PSP's native SDK yourself), then call [completeClientSession].
+     *
+     * [email] is required by Paystack/Flutterwave when the transaction has no customer
+     * email. [returnUrl] (http/https, e.g. an app link) is where the PSP's hosted page
+     * redirects after payment. [restart] replaces a session that died on the PSP side —
+     * the backend re-verifies the old one first.
+     */
+    suspend fun startClientSession(
+        channel: String,
+        email: String? = null,
+        name: String? = null,
+        returnUrl: String? = null,
+        restart: Boolean = false,
+    ): PaymentResult {
+        loadSession()
+        val raw = client.startClientSession(token, channel, email, name, returnUrl, restart)
+        return PaymentMapper.mapProcessResponse(raw, sessionMethodType(channel))
+    }
+
+    /**
+     * Verifies a client session once the payer is back from the PSP's UI.
+     * [PaymentResult.Complete] when confirmed, [PaymentResult.Processing] while the PSP
+     * hasn't settled it yet (keep [watchStatus] running — its webhook will), and a
+     * thrown [com.wajub.mobile.model.WajubError] (HTTP 402) when the PSP reports it failed.
+     */
+    suspend fun completeClientSession(clientSessionId: String): PaymentResult {
+        val raw = client.completeClientSession(token, clientSessionId)
+        return PaymentMapper.mapProcessResponse(raw, "card")
     }
 
     /** Cancels the checkout session. */
@@ -84,6 +141,7 @@ class WajubSession internal constructor(
         return when (match?.type?.lowercase()) {
             "mobile_money", "mobile" -> "mobile_money"
             "card" -> "card"
+            "wallet" -> "wallet"
             else -> "unknown"
         }
     }

@@ -51,12 +51,44 @@ data class SessionData(
     val callback: String? = null,
 )
 
+/**
+ * `sdk` flavors: `form`, `stripe_elements`, `hosted_redirect`, `adyen_custom_card`
+ * (not supported natively — needs Adyen's client-side encryption).
+ * `provider` is only a PREDICTION of who takes the channel; the pinned,
+ * authoritative provider is [ClientSession.provider].
+ */
 data class SdkChannelConfig(
     val available: Boolean,
     val provider: String? = null,
     val sdk: String? = null,
     val publishableKey: String? = null,
     val requiredFields: List<String> = emptyList(),
+    /** JSON `client_session` — POST /pay/client-session can hand this channel to the PSP's own hosted checkout. */
+    val clientSession: Boolean = false,
+)
+
+/**
+ * PSP-hosted checkout session (JSON `client_session` of POST /pay/client-session).
+ *
+ * Default flow: open [hostedUrl] in Custom Tabs, then call
+ * [com.wajub.mobile.WajubSession.completeClientSession] with [id] when the payer returns.
+ * Apps may instead launch the PSP's native SDK themselves — Paystack
+ * ([publicKey] + [accessCode]) or Flutterwave Android ([publicKey] +
+ * [encryptionKey], [reference] as tx_ref, [amount], [currency]) — and call
+ * completeClientSession the same way.
+ */
+data class ClientSession(
+    val id: String,
+    val provider: String,
+    /** PSP-side reference (Paystack `reference`, Flutterwave `tx_ref`). */
+    val reference: String? = null,
+    /** In the PSP's own units (Paystack: subunit; Flutterwave: major). */
+    val amount: Double? = null,
+    val currency: String? = null,
+    val hostedUrl: String? = null,
+    val accessCode: String? = null,
+    val publicKey: String? = null,
+    val encryptionKey: String? = null,
 )
 
 data class SdkConfig(
@@ -81,6 +113,8 @@ sealed class PaymentResult {
         val action: ActionKind,
         val actionUrl: String? = null,
         val transaction: SessionTransaction,
+        /** Set when [action] is [ActionKind.ClientSession]; [actionUrl] is then its hosted URL. */
+        val clientSession: ClientSession? = null,
     ) : PaymentResult()
 
     data class Failed(
@@ -94,7 +128,11 @@ enum class ActionKind {
     Confirm,
     Confirm3ds,
     PushApproval,
+    ClientSession,
 }
+
+/** Error code for a response carrying an `action` the SDK can't perform natively. */
+const val UNSUPPORTED_ACTION_CODE: String = "unsupported_action"
 
 data class CancelResult(
     val redirectUrl: String? = null,
