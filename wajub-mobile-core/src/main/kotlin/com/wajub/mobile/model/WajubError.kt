@@ -33,10 +33,13 @@ class WajubError(
             correlationId: String? = null,
             retryAfterSeconds: Int? = null,
         ): WajubError {
-            val type = when (httpStatus) {
-                401, 404 -> WajubErrorType.AuthenticationError
-                422 -> WajubErrorType.InvalidRequestError
-                429 -> WajubErrorType.RateLimitError
+            // 410 is an ended session: no retry of the same token can succeed.
+            // A 5xx is Wajub's side, not the payer's payment.
+            val type = when {
+                httpStatus == 401 || httpStatus == 404 || httpStatus == 410 -> WajubErrorType.AuthenticationError
+                httpStatus == 422 -> WajubErrorType.InvalidRequestError
+                httpStatus == 429 -> WajubErrorType.RateLimitError
+                httpStatus >= 500 -> WajubErrorType.ApiError
                 else -> WajubErrorType.PaymentError
             }
             val param = details.keys.singleOrNull()
@@ -45,7 +48,7 @@ class WajubError(
                 message = message,
                 code = code,
                 declineCode = if (httpStatus == 402) code else null,
-                retryable = httpStatus != 403,
+                retryable = httpStatus != 403 && httpStatus != 410,
                 param = param,
                 correlationId = correlationId,
                 retryAfterSeconds = retryAfterSeconds,
