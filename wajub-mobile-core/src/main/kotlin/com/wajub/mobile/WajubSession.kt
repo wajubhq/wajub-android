@@ -122,7 +122,10 @@ class WajubSession internal constructor(
     /** Cancels the checkout session. */
     suspend fun cancel(): String? = client.cancel(token).redirectUrl
 
-    /** Pusher/Reverb when `echo` is configured, otherwise polls `GET /pay/session`. */
+    /**
+     * Polls `GET /pay/session`, with Pusher/Reverb next to it when `echo` is
+     * configured. Emits when the result changes and ends on a final one.
+     */
     suspend fun watchStatus(intervalMs: Long = 5_000L): Flow<PaymentResult> {
         val session = loadSession()
         return RealtimeSubscriber(client, token, session, intervalMs).subscribe()

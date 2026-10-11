@@ -17,7 +17,7 @@ PaymentSheet (Compose)
         ↓
 POST /pay/process → PaymentResult → Custom Tabs for redirect/3DS
         ↓
-watchStatus() → Pusher or polling until terminal
+watchStatus() → Pusher and polling until terminal
 ```
 
 ## Modules
@@ -48,7 +48,7 @@ watchStatus() → Pusher or polling until terminal
 | Card (`hosted_redirect`) | PayPal / Mollie / Paddle / Kkiapay / FedaPay / PayDunya / CinetPay card page in Custom Tabs, after the sdk-config `requiredFields` (e.g. email, CinetPay billing) — `payCardHostedRedirect(channelSlug, billing)` |
 | One-tap wallets, e.g. Djamo (`wallet` channel, `form`, no `requiredFields`) | "Wallet" tab — headless: `payWallet(channelSlug)` |
 | Redirect / 3DS | Chrome Custom Tabs |
-| Realtime | Pusher/Reverb + polling fallback |
+| Realtime | Pusher/Reverb, with polling running next to it |
 
 ## Quick start
 
@@ -70,7 +70,7 @@ Build your own UI and call the session API directly:
 
 ```kotlin
 val result = session.payCard("card", paymentMethodId = "pm_...")
-session.watchStatus().collect { update -> /* Pusher or poll */ }
+session.watchStatus().collect { update -> /* Pusher and polling */ }
 ```
 
 ## Card via Paystack / Flutterwave (client sessions)
