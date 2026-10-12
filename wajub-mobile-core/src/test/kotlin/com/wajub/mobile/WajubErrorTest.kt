@@ -17,6 +17,15 @@ class WajubErrorTest {
     }
 
     @Test
+    fun `a token that is not a session (401, 404) is an authentication error the payer cannot retry`() {
+        for (status in listOf(401, 404)) {
+            val error = WajubError.fromHttp(status, "Payment session not found", "session_not_found")
+            assertEquals(WajubErrorType.AuthenticationError, error.type, "status $status")
+            assertFalse(error.retryable, "status $status")
+        }
+    }
+
+    @Test
     fun `a server error is Wajub side, not a declined payment`() {
         val error = WajubError.fromHttp(503, "Unavailable", "service_unavailable")
         assertEquals(WajubErrorType.ApiError, error.type)

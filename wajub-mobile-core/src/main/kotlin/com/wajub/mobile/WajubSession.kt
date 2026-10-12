@@ -8,7 +8,12 @@ import com.wajub.mobile.model.SdkConfig
 import com.wajub.mobile.model.SessionData
 import com.wajub.mobile.realtime.RealtimeSubscriber
 import com.wajub.mobile.realtime.StatusPoller
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.launch
 
 /**
  * Session-scoped checkout client — mirrors the hosted checkout `/pay` flow without WebView.
@@ -121,6 +126,21 @@ class WajubSession internal constructor(
 
     /** Cancels the checkout session. */
     suspend fun cancel(): String? = client.cancel(token).redirectUrl
+
+    /**
+     * For a payment sheet the payer closed. When nothing had been [submitted],
+     * the payment is cancelled on Wajub too (`POST /pay/cancel`), as the hosted
+     * checkout does; an attempt under way is left alone, since a Mobile Money
+     * approval can still land. Best effort, in the background: closing the
+     * sheet never waits on it, and a failure is ignored.
+     */
+    fun cancelIfNothingSubmitted(
+        submitted: Boolean,
+        scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO),
+    ): Job? {
+        if (submitted) return null
+        return scope.launch { runCatching { cancel() } }
+    }
 
     /**
      * Polls `GET /pay/session`, with Pusher/Reverb next to it when `echo` is

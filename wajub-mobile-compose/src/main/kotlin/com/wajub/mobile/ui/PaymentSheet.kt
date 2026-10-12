@@ -93,6 +93,9 @@ fun PaymentSheet(
     var sdkConfig by remember { mutableStateOf<SdkConfig?>(null) }
     var loading by remember { mutableStateOf(true) }
     var submitting by remember { mutableStateOf(false) }
+    // Whether the payer submitted anything: closing the sheet before that
+    // cancels the payment on Wajub too.
+    var submitted by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<WajubError?>(null) }
     var tab by remember { mutableIntStateOf(0) }
     var selectedChannel by remember { mutableStateOf<SessionChannel?>(null) }
@@ -191,7 +194,13 @@ fun PaymentSheet(
 
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
 
-    ModalBottomSheet(onDismissRequest = onDismiss, sheetState = sheetState) {
+    ModalBottomSheet(
+        onDismissRequest = {
+            wajubSession.cancelIfNothingSubmitted(submitted)
+            onDismiss()
+        },
+        sheetState = sheetState,
+    ) {
         Column(
             Modifier
                 .fillMaxWidth()
@@ -235,6 +244,7 @@ fun PaymentSheet(
                             onClick = {
                                 scope.launch {
                                     submitting = true
+                                    submitted = true
                                     error = null
                                     try {
                                         val result = wajubSession.payWallet(ch.slug)
@@ -282,6 +292,7 @@ fun PaymentSheet(
                                 val ch = selectedChannel ?: return@Button
                                 scope.launch {
                                     submitting = true
+                                    submitted = true
                                     error = null
                                     try {
                                         val result = wajubSession.payMobileMoney(
@@ -319,6 +330,7 @@ fun PaymentSheet(
                             onClick = {
                                 scope.launch {
                                     submitting = true
+                                    submitted = true
                                     error = null
                                     try {
                                         val result = wajubSession.startClientSession(
@@ -384,6 +396,7 @@ fun PaymentSheet(
                             onClick = {
                                 scope.launch {
                                     submitting = true
+                                    submitted = true
                                     error = null
                                     try {
                                         val result = wajubSession.payCardHostedRedirect(cardSlug, billing)
@@ -445,6 +458,7 @@ fun PaymentSheet(
                                 }
                                 scope.launch {
                                     submitting = true
+                                    submitted = true
                                     error = null
                                     try {
                                         val pmId = StripeTokenizer.createPaymentMethod(

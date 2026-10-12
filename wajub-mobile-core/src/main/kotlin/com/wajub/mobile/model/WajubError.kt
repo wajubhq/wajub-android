@@ -33,8 +33,9 @@ class WajubError(
             correlationId: String? = null,
             retryAfterSeconds: Int? = null,
         ): WajubError {
-            // 410 is an ended session: no retry of the same token can succeed.
-            // A 5xx is Wajub's side, not the payer's payment.
+            // 401, 404 and 410 are a token that is not, or no longer, a
+            // payment session: no retry of the same token can succeed. A 5xx
+            // is Wajub's side, not the payer's payment.
             val type = when {
                 httpStatus == 401 || httpStatus == 404 || httpStatus == 410 -> WajubErrorType.AuthenticationError
                 httpStatus == 422 -> WajubErrorType.InvalidRequestError
@@ -48,7 +49,7 @@ class WajubError(
                 message = message,
                 code = code,
                 declineCode = if (httpStatus == 402) code else null,
-                retryable = httpStatus != 403 && httpStatus != 410,
+                retryable = httpStatus !in setOf(401, 403, 404, 410),
                 param = param,
                 correlationId = correlationId,
                 retryAfterSeconds = retryAfterSeconds,
