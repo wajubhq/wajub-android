@@ -1,0 +1,157 @@
+package com.wajub.mobile.mobilemoney
+
+import com.wajub.mobile.model.SessionChannel
+import com.wajub.mobile.model.WajubLanguage
+
+/** One operator the payer can pick in the Mobile Money form. */
+data class OperatorChoice(
+    /** `mtn`, `orange`, `wave`, `eu`. */
+    val id: String,
+    /** The brand label (`MTN MoMo`), else the channel's name. */
+    val label: String,
+    /** An `https` logo, or null: draw [badge]. */
+    val logo: String?,
+    /** The slug to pay through: the aggregate's (`cm.mobile`) for one of its members. */
+    val channelSlug: String,
+    /** Paid through an aggregate channel, which takes an `operator` hint. */
+    val viaAggregate: Boolean,
+    val badge: BrandBadge,
+    /** The channel's `min_amount` / `max_amount`. */
+    val minAmount: Double? = null,
+    val maxAmount: Double? = null,
+)
+
+/** A form problem found before submitting (errors.md §3.3). */
+data class FormIssue(
+    /** `phone_required`, `invalid_phone`, `operator_mismatch`, `operator_required`. */
+    val code: String,
+    /** Placeholders of the message (`detected`, `selected`). */
+    val args: Map<String, String> = emptyMap(),
+    /** Whether it stops the payment (a sandbox mismatch only warns). */
+    val blocking: Boolean = true,
+)
+
+/** The checkout's Mobile Money form rules (spec §6.1–6.4). */
+object MobileMoneyRules {
+    fun isMobileMoney(channel: SessionChannel): Boolean =
+        channel.type.equals("mobile_money", true) || channel.type.equals("mobile", true)
+
+    /** The countries of the Mobile Money channels, in API order. */
+    fun countries(channels: List<SessionChannel>): List<String> =
+        channels.filter { isMobileMoney(it) }.flatMap { it.countries }.map { it.uppercase() }.distinct()
+
+    /** The requested country, else [geoCountry] when a channel covers it, else the first channel's first country. */
+    fun defaultCountry(channels: List<SessionChannel>, requested: String?, geoCountry: String?): String? {
+        requested?.takeIf { it.isNotBlank() }?.let { return it.uppercase() }
+        val covered = countries(channels)
+        geoCountry?.uppercase()?.takeIf { it in covered }?.let { return it }
+        return covered.firstOrNull()
+    }
+
+    /**
+     * The choices for [country]: one per member of an aggregate channel, one
+     * per other Mobile Money channel, in API order; a repeated id keeps the first.
+     */
+    fun choices(channels: List<SessionChannel>, country: String?, language: WajubLanguage): List<OperatorChoice> {
+        val data = MobileMoney.data()
+        val out = linkedMapOf<String, OperatorChoice>()
+        for (channel in channels) {
+            if (!isMobileMoney(channel)) continue
+            if (channel.countries.isNotEmpty() && channel.countries.none { it.equals(country, true) }) continue
+            if (channel.operators.isNotEmpty()) {
+                for (op in channel.operators) {
+                    if (op.operator in out) continue
+                    val label = data.brandLabel(op.operator) ?: op.name
+                    out[op.operator] = OperatorChoice(
+                        id = op.operator,
+                        label = label,
+                        logo = op.logo?.takeIf { it.startsWith("https://") },
+                        channelSlug = channel.slug,
+                        viaAggregate = true,
+                        badge = data.badge(op.operator, op.name),
+                        minAmount = channel.minAmount,
+                        maxAmount = channel.maxAmount,
+                    )
+                }
+            } else {
+                val id = channel.slug.substringAfter('.').lowercase()
+                if (id in out) continue
+                val name = channelName(channel, language)
+                out[id] = OperatorChoice(
+                    id = id,
+                    label = data.brandLabel(id) ?: name,
+                    logo = channel.logo?.takeIf { it.startsWith("https://") },
+                    channelSlug = channel.slug,
+                    viaAggregate = false,
+                    badge = data.badge(id, name),
+                    minAmount = channel.minAmount,
+                    maxAmount = channel.maxAmount,
+                )
+            }
+        }
+        return out.values.toList()
+    }
+
+    /** A channel's name in the sheet's language (`name.fr` for French). */
+    fun channelName(channel: SessionChannel, language: WajubLanguage): String =
+        if (language == WajubLanguage.Fr) channel.nameFr ?: channel.name else channel.name
+
+    /**
+     * The selection after the number changed: a payer's own pick stays; else a
+     * detected operator among [choiceIds] is selected; else [current], else the first.
+     */
+    fun selection(choiceIds: List<String>, current: String?, pickedByHand: Boolean, detected: String?): String? {
+        if (pickedByHand && current != null) return current
+        if (detected != null && detected in choiceIds) return detected
+        return current?.takeIf { it in choiceIds } ?: choiceIds.firstOrNull()
+    }
+
+    /**
+     * Checks the form before submitting, in the web checkout's order:
+     * `phone_required`, `invalid_phone`, `operator_mismatch`, `operator_required`.
+     * In sandbox a mismatch does not block (test prefixes follow no real plan).
+     */
+    fun validate(
+        phone: String,
+        country: MobileMoneyCountry,
+        choiceIds: List<String>,
+        selected: String?,
+        label: (String) -> String,
+        sandbox: Boolean,
+    ): FormIssue? {
+        if (MobileMoney.sanitize(phone).isEmpty()) return FormIssue("phone_required")
+        if (!MobileMoney.isValid(phone, country)) return FormIssue("invalid_phone")
+        val detected = MobileMoney.detectOperator(phone, country)
+        val independent = MobileMoney.data().operatorIndependentWallets
+        if (detected != null && detected in choiceIds && selected != null && detected != selected && selected !in independent) {
+            val issue = FormIssue(
+                "operator_mismatch",
+                mapOf("detected" to label(detected), "selected" to label(selected)),
+                blocking = !sandbox,
+            )
+            if (issue.blocking) return issue
+        }
+        if (selected == null) return FormIssue("operator_required")
+        return null
+    }
+
+    /**
+     * The `operator` sent with an aggregate charge: the selection, when the
+     * payer picked it by hand or the number names it. A default never touched
+     * is not sent: the API would route to it instead of refusing the number.
+     */
+    fun operatorHint(viaAggregate: Boolean, selected: String?, pickedByHand: Boolean, detected: String?): String? {
+        if (!viaAggregate || selected == null) return null
+        return if (pickedByHand || detected == selected) selected else null
+    }
+
+    /** `data` of a Mobile Money charge, without `_client`, `return_url` and `altcha`. */
+    fun requestData(choice: OperatorChoice, phone: String, country: MobileMoneyCountry, pickedByHand: Boolean): Map<String, Any?> {
+        val detected = MobileMoney.detectOperator(phone, country)
+        return buildMap {
+            put("phone", MobileMoney.e164(phone, country))
+            put("country", country.code)
+            operatorHint(choice.viaAggregate, choice.id, pickedByHand, detected)?.let { put("operator", it) }
+        }
+    }
+}

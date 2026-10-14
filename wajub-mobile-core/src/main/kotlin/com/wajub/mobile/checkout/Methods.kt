@@ -1,0 +1,146 @@
+package com.wajub.mobile.checkout
+
+import com.wajub.mobile.mapper.PaymentMapper
+import com.wajub.mobile.mobilemoney.MobileMoneyRules
+import com.wajub.mobile.model.SdkChannelConfig
+import com.wajub.mobile.model.SdkConfig
+import com.wajub.mobile.model.SessionChannel
+import com.wajub.mobile.model.WajubLanguage
+
+/** How the card channel is paid (spec §7), first match wins. */
+sealed class CardFlavor {
+    /** The PSP's hosted checkout (Paystack, Flutterwave, Adyen): `POST /pay/client-session`. */
+    data class ClientSession(val requiredFields: List<String>) : CardFlavor()
+
+    /** Stripe's card widget makes a `pm_…`. */
+    data class Stripe(val publishableKey: String) : CardFlavor()
+
+    /** The PSP's card page, after the contact/billing fields it still needs. */
+    data class HostedRedirect(val requiredFields: List<String>) : CardFlavor()
+
+    /** Sandbox only: the published test cards. */
+    data object SandboxForm : CardFlavor()
+
+    data object Hidden : CardFlavor()
+
+    companion object {
+        /** `client_session`, then `stripe_elements`, `hosted_redirect`, sandbox `form`; anything else is hidden. */
+        fun decide(entry: SdkChannelConfig?, sandbox: Boolean): CardFlavor {
+            if (entry == null || !entry.available) return Hidden
+            val contactFields = entry.requiredFields.filter { it in PaymentMapper.hostedCardFields }
+            return when {
+                entry.clientSession -> ClientSession(contactFields)
+                entry.sdk == "stripe_elements" -> entry.publishableKey?.let { Stripe(it) } ?: Hidden
+                entry.sdk == "hosted_redirect" -> HostedRedirect(contactFields)
+                entry.sdk == "form" && sandbox -> SandboxForm
+                else -> Hidden
+            }
+        }
+    }
+}
+
+/** One method of the sheet's list. */
+data class PaymentMethod(
+    /** `mobile_money`, `card`, or a wallet's slug. */
+    val id: String,
+    /** `mobile_money`, `card` or `wallet`. */
+    val family: String,
+    /** In the sheet's language. */
+    val name: String,
+    val logo: String?,
+    /** The channels it pays through (every Mobile Money channel for `mobile_money`). */
+    val channels: List<SessionChannel>,
+    val cardFlavor: CardFlavor? = null,
+    /** Shown disabled when `amount_total` is outside the channel's limits. */
+    val minAmount: Double? = null,
+    val maxAmount: Double? = null,
+) {
+    val slug: String get() = channels.first().slug
+
+    fun outOfLimits(amount: Double): Boolean =
+        (minAmount != null && amount < minAmount) || (maxAmount != null && amount > maxAmount)
+}
+
+/** Which session channels the sheet offers (spec §1, §5). */
+object PaymentMethods {
+    /**
+     * The methods, in API order: one Mobile Money method for every Mobile
+     * Money channel, the card when its flavour is supported, each one-tap
+     * wallet. Other channel types are not shown.
+     */
+    fun build(
+        channels: List<SessionChannel>,
+        sdkConfig: SdkConfig?,
+        sandbox: Boolean,
+        language: WajubLanguage,
+    ): List<PaymentMethod> {
+        val methods = mutableListOf<PaymentMethod>()
+        val momo = channels.filter { MobileMoneyRules.isMobileMoney(it) && mobileMoneyAvailable(it, sdkConfig) }
+        for (channel in channels) {
+            when {
+                MobileMoneyRules.isMobileMoney(channel) -> {
+                    if (momo.isNotEmpty() && methods.none { it.family == "mobile_money" }) {
+                        methods += PaymentMethod(
+                            id = "mobile_money",
+                            family = "mobile_money",
+                            name = "Mobile Money",
+                            logo = momo.first().logo,
+                            channels = momo,
+                        )
+                    }
+                }
+                channel.type.equals("card", true) -> {
+                    val flavor = CardFlavor.decide(entryFor(channel, sdkConfig), sandbox)
+                    if (flavor != CardFlavor.Hidden) {
+                        methods += PaymentMethod(
+                            id = "card",
+                            family = "card",
+                            name = MobileMoneyRules.channelName(channel, language),
+                            logo = channel.logo,
+                            channels = listOf(channel),
+                            cardFlavor = flavor,
+                            minAmount = channel.minAmount,
+                            maxAmount = channel.maxAmount,
+                        )
+                    }
+                }
+                PaymentMapper.isRedirectWalletChannel(channel, entryFor(channel, sdkConfig)) ->
+                    methods += PaymentMethod(
+                        id = channel.slug,
+                        family = "wallet",
+                        name = MobileMoneyRules.channelName(channel, language),
+                        logo = channel.logo,
+                        channels = listOf(channel),
+                        minAmount = channel.minAmount,
+                        maxAmount = channel.maxAmount,
+                    )
+            }
+        }
+        return methods
+    }
+
+    /**
+     * sdk-config is keyed by raw slug: an aggregate (`cm.mobile`) reads the
+     * entry of [operator]'s channel, else of any member (`cm.mtn`, `cm.orange`).
+     * A Mobile Money channel without an entry (sandbox) is a `form` asking the phone.
+     */
+    fun entryFor(channel: SessionChannel, sdkConfig: SdkConfig?, operator: String? = null): SdkChannelConfig? {
+        val entries = sdkConfig?.channels ?: emptyMap()
+        val entry = if (channel.operators.isNotEmpty()) {
+            val members = channel.operators
+            members.firstOrNull { it.operator == operator }?.let { entries[it.slug] }
+                ?: members.firstNotNullOfOrNull { entries[it.slug] }
+        } else {
+            entries[channel.slug]
+        }
+        if (entry == null && MobileMoneyRules.isMobileMoney(channel)) {
+            return SdkChannelConfig(available = true, sdk = "form", requiredFields = listOf("phone"))
+        }
+        return entry
+    }
+
+    // sdk-config may hide a Mobile Money channel (`available: false`); without
+    // sdk-config (its call failed) Mobile Money still works.
+    private fun mobileMoneyAvailable(channel: SessionChannel, sdkConfig: SdkConfig?): Boolean =
+        sdkConfig == null || entryFor(channel, sdkConfig)?.available != false
+}

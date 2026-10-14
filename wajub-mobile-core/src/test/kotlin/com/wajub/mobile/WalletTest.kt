@@ -79,7 +79,7 @@ class PayWalletTest {
         val requests = List(server.requestCount) { server.takeRequest() }
         val body = JSONObject(requests.single { it.path == "/pay/process" }.body.readUtf8())
         assertEquals("ci.djamo", body.getString("channel"))
-        assertEquals(0, body.getJSONObject("data").length())
+        assertEquals(setOf("_client"), body.getJSONObject("data").keys().asSequence().toSet(), "nothing but the device signals")
         assertIs<PaymentResult.RequiresAction>(result)
         assertEquals("https://djamo.ci/?type=payment_confirmation", result.actionUrl)
     }

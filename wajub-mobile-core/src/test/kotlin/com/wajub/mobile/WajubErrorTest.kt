@@ -10,9 +10,10 @@ import kotlin.test.assertTrue
 
 class WajubErrorTest {
     @Test
-    fun `an ended session (410) is an authentication error the payer cannot retry`() {
+    fun `an ended session (410) is session_terminal_expired, which the payer cannot retry`() {
         val error = WajubError.fromHttp(410, "Session expired", "session_expired")
-        assertEquals(WajubErrorType.AuthenticationError, error.type)
+        assertEquals("session_terminal_expired", error.code)
+        assertEquals(WajubErrorType.InvalidRequestError, error.type)
         assertFalse(error.retryable)
     }
 

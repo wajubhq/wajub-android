@@ -11,6 +11,28 @@ kotlin {
     jvmToolchain(17)
 }
 
+// SDK_VERSION (sent in X-Wajub-Client) comes from gradle.properties, so the
+// version is written in one place.
+val generateSdkVersion by tasks.registering {
+    val sdkVersion = version.toString()
+    val outputDir = layout.buildDirectory.dir("generated/sdkVersion")
+    inputs.property("version", sdkVersion)
+    outputs.dir(outputDir)
+    doLast {
+        val file = outputDir.get().file("com/wajub/mobile/SdkVersion.kt").asFile
+        file.parentFile.mkdirs()
+        file.writeText(
+            "package com.wajub.mobile\n\n" +
+                "/** This SDK's version, as published to Maven Central. */\n" +
+                "const val SDK_VERSION: String = \"$sdkVersion\"\n",
+        )
+    }
+}
+
+sourceSets.main {
+    kotlin.srcDir(generateSdkVersion)
+}
+
 dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("com.squareup.moshi:moshi:1.15.1")

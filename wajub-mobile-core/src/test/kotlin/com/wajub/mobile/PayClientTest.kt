@@ -38,11 +38,14 @@ class PayClientTest {
     }
 
     @Test
-    fun buildsMobileMoneyPayload() {
+    fun buildsMobileMoneyPayloadWithTheNumberInE164() {
         val data = PaymentMapper.buildMobileMoneyRequest(
             MobileMoneyInput("cm.mtn", "699887766", "cm"),
         )
-        assertEquals("699887766", data["phone"])
+        assertEquals("+237699887766", data["phone"])
         assertEquals("CM", data["country"])
+        assertEquals(null, data["operator"])
+        val aggregate = PaymentMapper.buildMobileMoneyRequest(MobileMoneyInput("cm.mobile", "699887766", "CM", operator = "orange"))
+        assertEquals("orange", aggregate["operator"])
     }
 }

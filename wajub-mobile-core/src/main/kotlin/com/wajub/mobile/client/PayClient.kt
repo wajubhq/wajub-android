@@ -1,44 +1,121 @@
 package com.wajub.mobile.client
 
 import com.wajub.mobile.API_URL
-import com.wajub.mobile.model.CancelResult
-import com.wajub.mobile.model.EchoConfig
-import com.wajub.mobile.model.ProcessingContext
-import com.wajub.mobile.model.SdkChannelConfig
-import com.wajub.mobile.model.SdkConfig
-import com.wajub.mobile.model.SessionChannel
-import com.wajub.mobile.model.SessionData
-import com.wajub.mobile.model.SessionTransaction
-import com.wajub.mobile.model.WajubError
+import com.wajub.mobile.WajubMobile
+import com.wajub.mobile.device.DeviceEnvironment
 import com.wajub.mobile.mapper.RawProcessResponse
 import com.wajub.mobile.mapper.RawSessionResponse
-import com.wajub.mobile.mapper.RawTransaction
-import okhttp3.MediaType.Companion.toMediaType
+import com.wajub.mobile.mapper.bool
+import com.wajub.mobile.mapper.obj
+import com.wajub.mobile.mapper.parseObject
+import com.wajub.mobile.mapper.str
+import com.wajub.mobile.mapper.strings
+import com.wajub.mobile.model.CancelResult
+import com.wajub.mobile.model.SdkChannelConfig
+import com.wajub.mobile.model.SdkConfig
+import com.wajub.mobile.model.SessionData
+import com.wajub.mobile.model.WajubError
+import com.wajub.mobile.model.WajubLanguage
+import kotlinx.coroutines.delay
+import okhttp3.OkHttp
 import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.UUID
-import java.util.concurrent.TimeUnit
+import kotlin.math.min
+import kotlin.random.Random
 
-class PayClient(
-    private val http: OkHttpClient = defaultHttp(),
+/** The automatic retries of one call (spec §2.5). */
+internal enum class Retry(val max: Int) {
+    /** GETs: network, timeout, 408, 429 (Retry-After ≤ 10 s), 500, 502, 503, 504. */
+    Reads(3),
+
+    /** Charges: network, timeout, 502, 503, 504 — the same body and Idempotency-Key. */
+    Payments(2),
+
+    /** `POST /pay/cancel`: network and timeout only. */
+    Cancel(2),
+
+    Never(0),
+}
+
+/** One `/pay` endpoint: its method, path, whole-request timeout and retries. */
+internal class ApiCall(val method: String, val path: String, val timeoutMs: Long, val retry: Retry) {
+    companion object {
+        private const val SHORT = 30_000L
+        private const val LONG = 60_000L
+
+        val Session = ApiCall("GET", "/pay/session", SHORT, Retry.Reads)
+        val SdkConfig = ApiCall("GET", "/pay/sdk-config", SHORT, Retry.Reads)
+        val Status = ApiCall("GET", "/pay/status", SHORT, Retry.Reads)
+
+        /** A watch's polls: its own schedule backs off on errors (spec §13.2). */
+        val StatusPoll = ApiCall("GET", "/pay/status", SHORT, Retry.Never)
+        val Process = ApiCall("POST", "/pay/process", LONG, Retry.Payments)
+        val ClientSession = ApiCall("POST", "/pay/client-session", LONG, Retry.Payments)
+        val ClientSessionComplete = ApiCall("POST", "/pay/client-session/complete", LONG, Retry.Payments)
+        val Cancel = ApiCall("POST", "/pay/cancel", SHORT, Retry.Cancel)
+        val ThreeDsVerify = ApiCall("POST", "/pay/3ds/verify", LONG, Retry.Never)
+        val ThreeDsSend = ApiCall("POST", "/pay/3ds/send", SHORT, Retry.Never)
+        val BroadcastingAuth = ApiCall("POST", "/pay/broadcasting/auth", SHORT, Retry.Never)
+
+        /** `kind` is `otp`, `pin`, `phone`, `birthday` or `address`. */
+        fun verify(kind: String) = ApiCall("POST", "/pay/$kind/verify", LONG, Retry.Never)
+
+        fun resend(kind: String) = ApiCall("POST", "/pay/$kind/resend", SHORT, Retry.Never)
+    }
+}
+
+/** An answer of the API, whatever its status. */
+internal class ApiResponse(
+    val status: Int,
+    val body: JSONObject,
+    /** The response's `X-Request-Id`. */
+    val correlationId: String?,
+    val retryAfter: String?,
 ) {
+    val isSuccess: Boolean get() = status in 200..299
+}
+
+/**
+ * HTTP client of the payment-session API (`https://api.wajub.com/pay/…`).
+ * Every call carries the session token, the SDK's headers, its own timeout,
+ * and retries what is safe to retry.
+ */
+class PayClient internal constructor(
+    private val transport: Transport,
+    internal val baseUrl: String = API_URL,
+    private val environment: () -> DeviceEnvironment = { WajubMobile.device },
+    private val pause: suspend (Long) -> Unit = { delay(it) },
+    private val random: Random = Random.Default,
+) {
+    constructor(http: OkHttpClient = defaultHttp()) : this(OkHttpTransport(http))
+
+    /** The language of the errors this client builds; the sheet sets it to its own. */
+    @Volatile
+    var language: WajubLanguage = WajubLanguage.device()
+
     suspend fun getSession(token: String): SessionData =
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            getSessionBlocking(token)
-        }
+        RawSessionResponse.fromJson(expectSuccess(send(token, ApiCall.Session), loading = true)).toModel()
 
-    suspend fun getSdkConfig(token: String): SdkConfig =
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            getSdkConfigBlocking(token)
-        }
+    suspend fun getSdkConfig(token: String): SdkConfig = parseSdkConfig(expectSuccess(send(token, ApiCall.SdkConfig)))
 
-    suspend fun process(token: String, channel: String, data: Map<String, Any?>): RawProcessResponse =
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            processBlocking(token, channel, data)
-        }
+    /**
+     * POST /pay/process with a fresh Idempotency-Key, reused by its automatic
+     * retries, and the device signals as `data._client`. Throws [WajubError]
+     * for an answer that is not a 2xx.
+     */
+    suspend fun process(token: String, channel: String, data: Map<String, Any?>): RawProcessResponse {
+        val response = send(token, ApiCall.Process, processPayload(channel, data), idempotencyKey = newIdempotencyKey())
+        return RawProcessResponse.fromJson(expectSuccess(response))
+    }
+
+    /** `{channel, data}` with `data._client` (spec §2.3) unless the caller set it. */
+    internal fun processPayload(channel: String, data: Map<String, Any?>): JSONObject {
+        val withSignals = LinkedHashMap(data)
+        if ("_client" !in withSignals) withSignals["_client"] = environment().clientSignals()
+        return JSONObject().put("channel", channel).put("data", mapToJson(withSignals))
+    }
 
     /**
      * POST /pay/client-session — opens (or re-serves) a PSP-hosted checkout for
@@ -52,227 +129,200 @@ class PayClient(
         name: String? = null,
         returnUrl: String? = null,
         restart: Boolean = false,
-    ): RawProcessResponse =
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            val payload = JSONObject().put("channel", channel)
-            email?.takeIf { it.isNotBlank() }?.let { payload.put("email", it) }
-            name?.takeIf { it.isNotBlank() }?.let { payload.put("name", it) }
-            returnUrl?.takeIf { it.isNotBlank() }?.let { payload.put("return_url", it) }
-            if (restart) payload.put("restart", true)
-            mapProcessBody(request("POST", token, "/pay/client-session", payload))
-        }
+    ): RawProcessResponse {
+        val payload = clientSessionPayload(channel, email, name, returnUrl, restart, emptyMap())
+        return RawProcessResponse.fromJson(expectSuccess(send(token, ApiCall.ClientSession, payload)))
+    }
 
     /**
      * POST /pay/client-session/complete — the backend verifies the session with
      * the PSP by its own reference (the client never sends a PSP reference).
      * 200 complete, 202 still pending, 402 failed (thrown as [WajubError]).
      */
-    suspend fun completeClientSession(token: String, clientSessionId: String): RawProcessResponse =
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            val payload = JSONObject().put("client_session_id", clientSessionId)
-            mapProcessBody(request("POST", token, "/pay/client-session/complete", payload))
-        }
+    suspend fun completeClientSession(token: String, clientSessionId: String): RawProcessResponse {
+        val payload = JSONObject().put("client_session_id", clientSessionId)
+        return RawProcessResponse.fromJson(expectSuccess(send(token, ApiCall.ClientSessionComplete, payload)))
+    }
 
     suspend fun cancel(token: String): CancelResult =
-        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
-            cancelBlocking(token)
-        }
+        CancelResult(redirectUrl = expectSuccess(send(token, ApiCall.Cancel, JSONObject())).str("redirect_url"))
 
-    private fun getSessionBlocking(token: String): SessionData {
-        val body = request("GET", token, "/pay/session")
-        return mapSession(body)
-    }
-
-    private fun getSdkConfigBlocking(token: String): SdkConfig {
-        val body = request("GET", token, "/pay/sdk-config")
-        return mapSdkConfig(body)
-    }
-
-    private fun processBlocking(token: String, channel: String, data: Map<String, Any?>): RawProcessResponse {
-        val payload = JSONObject()
-            .put("channel", channel)
-            .put("data", mapToJson(data))
-        val body = request(
-            method = "POST",
-            token = token,
-            path = "/pay/process",
-            jsonBody = payload,
-            extraHeaders = mapOf("Idempotency-Key" to idempotencyKey()),
-        )
-        return mapProcessBody(body)
-    }
-
-    private fun cancelBlocking(token: String): CancelResult {
-        val body = request("POST", token, "/pay/cancel", JSONObject())
-        return CancelResult(redirectUrl = body.optString("redirect_url").ifBlank { null })
-    }
-
-    private fun request(
-        method: String,
-        token: String,
-        path: String,
-        jsonBody: JSONObject? = null,
-        extraHeaders: Map<String, String> = emptyMap(),
+    internal fun clientSessionPayload(
+        channel: String,
+        email: String?,
+        name: String?,
+        returnUrl: String?,
+        restart: Boolean,
+        fields: Map<String, Any?>,
     ): JSONObject {
-        val url = API_URL.trimEnd('/') + path
-        val builder = Request.Builder()
-            .url(url)
-            .header("Accept", "application/json")
-            // AuthenticatePaymentSession (api.wajub) reads this via Laravel's
-            // Request::bearerToken(), which requires the literal "Bearer " prefix —
-            // without it every /pay/* call 401s with "Payment session token required."
-            .header("Authorization", "Bearer $token")
+        val payload = JSONObject().put("channel", channel)
+        email?.takeIf { it.isNotBlank() }?.let { payload.put("email", it) }
+        name?.takeIf { it.isNotBlank() }?.let { payload.put("name", it) }
+        returnUrl?.takeIf { it.isNotBlank() }?.let { payload.put("return_url", it) }
+        if (restart) payload.put("restart", true)
+        fields.forEach { (key, value) -> if (value != null && !payload.has(key)) payload.put(key, toJsonValue(value)) }
+        return payload
+    }
 
-        extraHeaders.forEach { (k, v) -> builder.header(k, v) }
+    internal fun newIdempotencyKey(): String = UUID.randomUUID().toString()
 
-        when (method) {
-            "GET" -> builder.get()
-            "POST" -> {
-                val media = "application/json; charset=utf-8".toMediaType()
-                val bodyString = jsonBody?.toString() ?: "{}"
-                builder.post(bodyString.toRequestBody(media))
+    internal fun clientHeader(): String = environment().clientHeader
+
+    /** The body of a 2xx, or the [WajubError] of any other answer. */
+    internal fun expectSuccess(response: ApiResponse, loading: Boolean = false): JSONObject {
+        if (!response.isSuccess) throw errorOf(response, loading)
+        return response.body
+    }
+
+    internal fun errorOf(response: ApiResponse, loading: Boolean): WajubError =
+        WajubError.fromResponse(response.status, response.body, response.correlationId, response.retryAfter, language, loading)
+
+    /** A transport failure (no answer) as the error the payer sees. */
+    internal fun errorOf(failure: TransportException): WajubError =
+        WajubError.of(if (failure.timedOut) "timeout" else "network_error", language, apiMessage = failure.message)
+
+    /**
+     * Sends [call] with its retries. Answers with the last response whatever its
+     * status; throws [WajubError] (`network_error`, `timeout`) when no answer
+     * came back after the retries.
+     */
+    internal suspend fun send(
+        token: String,
+        call: ApiCall,
+        body: JSONObject? = null,
+        idempotencyKey: String? = null,
+    ): ApiResponse =
+        try {
+            sendRaw(token, call, body, idempotencyKey)
+        } catch (failure: TransportException) {
+            throw errorOf(failure)
+        }
+
+    /** As [send], but a missing answer is a [TransportException] (the caller decides). */
+    internal suspend fun sendRaw(
+        token: String,
+        call: ApiCall,
+        body: JSONObject? = null,
+        idempotencyKey: String? = null,
+    ): ApiResponse {
+        val text = body?.toString() ?: if (call.method == "POST") "{}" else null
+        var attempt = 0
+        while (true) {
+            val request = HttpRequest(
+                method = call.method,
+                url = baseUrl.trimEnd('/') + call.path,
+                headers = headers(token, idempotencyKey),
+                body = text,
+                timeoutMs = call.timeoutMs,
+            )
+            val outcome: Any = try {
+                transport.execute(request)
+            } catch (failure: TransportException) {
+                failure
             }
-            else -> error("Unsupported method: $method")
-        }
-
-        http.newCall(builder.build()).execute().use { response ->
-            val correlationId = response.header("X-Request-Id") ?: response.header("X-Trace-Id")
-            val text = response.body?.string().orEmpty()
-            val json = if (text.isNotBlank()) JSONObject(text) else JSONObject()
-            if (!response.isSuccessful) {
-                throw mapError(response.code, json, correlationId, response.header("Retry-After"))
+            val wait = if (attempt < call.retry.max) retryDelay(call.retry, attempt, outcome) else null
+            if (wait == null) {
+                return when (outcome) {
+                    is HttpResponse -> ApiResponse(
+                        status = outcome.status,
+                        body = parseObject(outcome.body),
+                        correlationId = outcome.header("X-Request-Id"),
+                        retryAfter = outcome.header("Retry-After"),
+                    )
+                    else -> throw outcome as TransportException
+                }
             }
-            return json
+            pause(wait)
+            attempt++
         }
     }
 
-    private fun mapError(code: Int, body: JSONObject, correlationId: String?, retryAfter: String?): WajubError {
-        val message = body.optString("message").ifBlank { "Request failed ($code)" }
-        val errorCode = when {
-            body.has("error_code") -> body.getString("error_code")
-            code == 402 -> "insufficient_funds"
-            code == 403 -> "blocked"
-            code == 410 -> "session_terminal_expired"
-            code == 422 -> "validation_error"
-            code == 429 -> "rate_limited"
-            code == 401 || code == 404 -> "session_not_found"
-            code >= 500 -> "server_error"
-            else -> "payment_error"
+    private fun headers(token: String, idempotencyKey: String?): Map<String, String> {
+        val device = environment()
+        val client = device.clientHeader
+        return buildMap {
+            // AuthenticatePaymentSession reads the token with Laravel's
+            // bearerToken(): the literal "Bearer " prefix is required.
+            put("Authorization", "Bearer $token")
+            put("Accept", "application/json")
+            put("Accept-Language", device.acceptLanguage())
+            put("X-Request-Id", UUID.randomUUID().toString())
+            put("X-Wajub-Client", client)
+            put("User-Agent", "okhttp/${OkHttp.VERSION} $client")
+            idempotencyKey?.let { put("Idempotency-Key", it) }
         }
-        val details = flattenErrors(body.opt("errors"))
-        val retrySeconds = retryAfter?.toIntOrNull()
-        return WajubError.fromHttp(code, message, errorCode, details, correlationId, retrySeconds)
     }
 
-    private fun flattenErrors(raw: Any?): Map<String, String> {
-        if (raw !is JSONObject) return emptyMap()
-        val out = linkedMapOf<String, String>()
-        raw.keys().forEach { key ->
-            val value = raw.get(key)
-            out[key] = when (value) {
-                is JSONArray -> if (value.length() > 0) value.getString(0) else ""
-                else -> value.toString()
+    // null: do not retry.
+    private fun retryDelay(retry: Retry, attempt: Int, outcome: Any): Long? {
+        if (retry == Retry.Never) return null
+        if (outcome is TransportException) return backoff(attempt)
+        val status = (outcome as HttpResponse).status
+        return when (retry) {
+            Retry.Reads -> when (status) {
+                408, 500, 502, 503, 504 -> backoff(attempt)
+                429 -> {
+                    val seconds = outcome.header("Retry-After")?.trim()?.toLongOrNull()
+                    when {
+                        seconds == null -> backoff(attempt)
+                        seconds * 1000 <= MAX_RETRY_AFTER_MS -> seconds * 1000
+                        else -> null
+                    }
+                }
+                else -> null
             }
+            Retry.Payments -> if (status in setOf(502, 503, 504)) backoff(attempt) else null
+            else -> null
         }
-        return out
     }
 
-    private fun mapSession(body: JSONObject): SessionData {
-        val raw = RawSessionResponse.fromJson(body)
-        return SessionData(
-            transaction = mapTransaction(raw.transaction),
-            channels = raw.channels.map { mapChannel(it) },
-            locale = raw.locale ?: "en",
-            branding = raw.branding,
-            echo = raw.echo?.let {
-                EchoConfig(it.key, it.wsHost, it.wsPort, it.channelPrefix, it.broadcaster)
-            },
-            callback = raw.callback,
-        )
+    // min(1 s × 2^n, 10 s) ± 30 %.
+    private fun backoff(attempt: Int): Long {
+        val base = min(BASE_DELAY_MS shl attempt, MAX_DELAY_MS).toDouble()
+        val jitter = 1.0 + (random.nextDouble() * 2 - 1) * JITTER
+        return (base * jitter).toLong()
     }
 
-    private fun mapSdkConfig(body: JSONObject): SdkConfig {
-        val channelsJson = body.optJSONObject("channels") ?: JSONObject()
+    private fun parseSdkConfig(body: JSONObject): SdkConfig {
+        val channelsJson = body.obj("channels") ?: JSONObject()
         val channels = linkedMapOf<String, SdkChannelConfig>()
         channelsJson.keys().forEach { slug ->
-            val ch = channelsJson.getJSONObject(slug)
+            val ch = channelsJson.obj(slug) ?: return@forEach
             channels[slug] = SdkChannelConfig(
-                available = ch.optBoolean("available"),
-                provider = ch.optString("provider").ifBlank { null },
-                sdk = ch.optString("sdk").ifBlank { null },
-                publishableKey = ch.optString("publishable_key").ifBlank { null },
-                requiredFields = jsonStringList(ch.optJSONArray("required_fields")),
-                clientSession = ch.optBoolean("client_session", false),
+                available = ch.bool("available") ?: false,
+                provider = ch.str("provider"),
+                sdk = ch.str("sdk"),
+                publishableKey = ch.str("publishable_key"),
+                requiredFields = ch.strings("required_fields"),
+                // Absent in sandbox and on unavailable entries: false.
+                clientSession = ch.bool("client_session") ?: false,
             )
         }
         return SdkConfig(channels)
     }
 
-    private fun mapProcessBody(body: JSONObject): RawProcessResponse =
-        RawProcessResponse.fromJson(body)
-
-    private fun mapTransaction(raw: RawTransaction): SessionTransaction =
-        SessionTransaction(
-            id = raw.id,
-            reference = raw.reference,
-            trxref = raw.trxref,
-            amount = raw.amount,
-            amountTotal = raw.amountTotal,
-            currency = raw.currency,
-            status = raw.status,
-            statusLabel = raw.statusLabel,
-            sandbox = raw.sandbox,
-            description = raw.description,
-            processingContext = raw.processingContext?.let {
-                ProcessingContext(
-                    channelSlug = it.channelSlug,
-                    isMobileMoney = it.isMobileMoney,
-                    payerInstruction = it.payerInstruction,
-                    actionUrl = it.actionUrl,
-                )
-            },
-        )
-
-    private fun mapChannel(raw: com.wajub.mobile.mapper.RawChannel): SessionChannel =
-        SessionChannel(
-            id = raw.id,
-            slug = raw.slug,
-            name = raw.name,
-            nameFr = raw.nameFr,
-            type = raw.type,
-            logo = raw.logo,
-            countries = raw.countries,
-            minAmount = raw.minAmount,
-            maxAmount = raw.maxAmount,
-            currency = raw.currency,
-        )
-
     private fun mapToJson(data: Map<String, Any?>): JSONObject {
         val obj = JSONObject()
-        data.forEach { (k, v) ->
-            when (v) {
-                null -> obj.put(k, JSONObject.NULL)
-                is Map<*, *> -> obj.put(k, mapToJson(v as Map<String, Any?>))
-                is List<*> -> obj.put(k, JSONArray(v))
-                else -> obj.put(k, v)
-            }
-        }
+        data.forEach { (k, v) -> obj.put(k, toJsonValue(v)) }
         return obj
     }
 
-    private fun jsonStringList(arr: JSONArray?): List<String> {
-        if (arr == null) return emptyList()
-        return (0 until arr.length()).map { arr.getString(it) }
-    }
-
-    private fun idempotencyKey(): String = "wajub-${UUID.randomUUID()}"
+    @Suppress("UNCHECKED_CAST")
+    private fun toJsonValue(v: Any?): Any =
+        when (v) {
+            null -> JSONObject.NULL
+            is Map<*, *> -> mapToJson(v as Map<String, Any?>)
+            is List<*> -> JSONArray().also { array -> v.forEach { array.put(toJsonValue(it)) } }
+            else -> v
+        }
 
     companion object {
-        fun defaultHttp(): OkHttpClient =
-            OkHttpClient.Builder()
-                .connectTimeout(30, TimeUnit.SECONDS)
-                .readTimeout(45, TimeUnit.SECONDS)
-                .writeTimeout(45, TimeUnit.SECONDS)
-                .build()
+        private const val BASE_DELAY_MS = 1_000L
+        private const val MAX_DELAY_MS = 10_000L
+        private const val MAX_RETRY_AFTER_MS = 10_000L
+        private const val JITTER = 0.3
+
+        /** Connect 10 s; each call then applies its own timeout (30 s or 60 s). */
+        fun defaultHttp(): OkHttpClient = OkHttpClient.Builder().build()
     }
 }
