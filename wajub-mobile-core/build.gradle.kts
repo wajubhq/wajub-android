@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.wajub"
-version = "1.2.1"
+version = providers.gradleProperty("wajubVersion").get()
 
 kotlin {
     jvmToolchain(17)
@@ -71,5 +71,9 @@ mavenPublishing {
 }
 
 signing {
-    useGpgCmd()
+    // CI signs with the in-memory key it gets from its secrets
+    // (ORG_GRADLE_PROJECT_signingInMemoryKey); a workstation with gpg.
+    if (!providers.gradleProperty("signingInMemoryKey").isPresent) {
+        useGpgCmd()
+    }
 }
