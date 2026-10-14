@@ -146,9 +146,10 @@ class LifecycleContractTest {
         runCurrent()
         button.cancelPayment()
         runCurrent()
-        assertEquals(CheckoutState.SUCCESS, button.state)
-        advanceTimeBy(3_001)
+        // Already paid: the sheet resolves complete (with onSuccess), never CANCELLED then SUCCESS.
         assertIs<CheckoutResult.Complete>(buttonEvents.result)
+        assertEquals(listOf("success:unknown", "complete:complete"), buttonEvents.events.takeLast(2))
+        assertTrue("state:CANCELLED" !in buttonEvents.events)
     }
 
     @Test
@@ -312,6 +313,18 @@ class LifecycleContractTest {
         first.dismiss()
         runCurrent()
         assertIs<CheckoutResult.Cancelled>(first.result.value)
+
+        // A sheet whose host cancelled its scope without settling it does not block the next one.
+        val hostScope = kotlinx.coroutines.CoroutineScope(backgroundScope.coroutineContext + kotlinx.coroutines.Job())
+        val abandoned = com.wajub.mobile.checkout.CheckoutController(fakeSession(cmApi()), PresentOptions(sessionToken = "t"), hostScope)
+        com.wajub.mobile.checkout.ActiveSheet.clear()
+        abandoned.start()
+        runCurrent()
+        hostScope.coroutineContext[kotlinx.coroutines.Job]!!.cancel()
+        val after = com.wajub.mobile.checkout.CheckoutController(fakeSession(cmApi()), PresentOptions(sessionToken = "t"), backgroundScope)
+        after.start()
+        assertNull(after.result.value, "not rejected")
+        after.hostGone()
 
         // A sheet can be presented again at once, from onComplete itself.
         var reopened: com.wajub.mobile.checkout.CheckoutController? = null

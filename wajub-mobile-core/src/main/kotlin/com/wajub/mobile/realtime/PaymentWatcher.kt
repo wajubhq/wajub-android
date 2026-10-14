@@ -16,6 +16,9 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlin.math.min
 import kotlin.random.Random
 
+/** The longest a watch runs without an outcome (spec §13.2). */
+internal const val WATCH_CAP_MS: Long = 15 * 60 * 1000L
+
 /** What watching a payment reports (spec §13). */
 sealed class WatchEvent {
     /** A status that decides nothing yet: `processing`, `partial`, or a `pending` left by an earlier attempt. */

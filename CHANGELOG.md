@@ -51,7 +51,7 @@
   `payWallet`, `process(channel, data)`, `startClientSession`, `completeClientSession`, `watchStatus`,
   `watchStatusPolling`, `RealtimeSubscriber` and `StatusPoller` are deprecated; they keep working as in
   1.2.1, with the same results and errors. The 1.2 sheet now runs the new screens and still calls
-  `onResult` with each answer, then with `Complete` once paid, and `onDismiss` when it closes otherwise.
+  `onResult` with each answer, then with `Complete` once paid, and `onDismiss` when the payer closes it.
 
 ## 1.2.1
 

@@ -21,9 +21,14 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModel
+import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.lifecycle.viewmodel.initializer
+import androidx.lifecycle.viewmodel.viewModelFactory
 import com.wajub.mobile.WajubMobile
 import com.wajub.mobile.WajubSession
 import com.wajub.mobile.checkout.CheckoutController
@@ -59,22 +64,22 @@ import java.util.UUID
  */
 @Composable
 fun PaymentSheet(options: PresentOptions, onComplete: (CheckoutResult) -> Unit) {
-    SheetHost({ WajubMobile.createSession(options.sessionToken) }, options, onComplete = onComplete)
+    SheetHost(options.sessionToken, { WajubMobile.createSession(options.sessionToken) }, options, onComplete = onComplete)
 }
 
 /** The same, on a session you created (`WajubMobile.createSession`); [PresentOptions.sessionToken] is not read. */
 @Composable
 fun PaymentSheet(session: WajubSession, options: PresentOptions = PresentOptions(), onComplete: (CheckoutResult) -> Unit) {
-    SheetHost({ session }, options, onComplete = onComplete)
+    SheetHost(System.identityHashCode(session), { session }, options, onComplete = onComplete)
 }
 
 /**
  * The 1.x sheet. [onResult] is called as in 1.x, with each answer to a
  * payment request (`RequiresAction` for a push approval or a provider page,
- * `Complete`, `Processing`, `Failed` for a step it cannot take) — and with
- * `Complete` when the payment succeeds; [onDismiss] when the sheet closes
- * otherwise. Redirects, approvals, confirmation steps and watching happen in
- * the sheet.
+ * `Complete`, `Processing`, `Failed` for a step it cannot take, the outcome of
+ * a card paid on the provider's page) — and with `Complete` when the payment
+ * succeeds; [onDismiss] when the payer closes it. Redirects, approvals,
+ * confirmation steps and watching happen in the sheet.
  */
 @Deprecated(
     "Use PaymentSheet(session, PresentOptions(), onComplete): its CheckoutResult also says why a sheet closed.",
@@ -87,7 +92,7 @@ fun PaymentSheet(
     onResult: (PaymentResult) -> Unit,
 ) {
     // As in 1.x, the success screen stays until the app hides the sheet.
-    SheetHost({ wajubSession }, LEGACY_OPTIONS, LegacyCallbacks(onResult, onDismiss)) { }
+    SheetHost(System.identityHashCode(wajubSession), { wajubSession }, LEGACY_OPTIONS, LegacyCallbacks(onResult, onDismiss)) { }
 }
 
 private val LEGACY_OPTIONS = PresentOptions(autoCloseSuccess = 0)
@@ -107,9 +112,19 @@ private fun paidTransaction(payment: PaymentSuccess) =
     )
 
 // What 1.x's onResult received for an answer; null for what 1.x never reported
-// (refusals were shown in the form; confirmation steps are handled now).
-private fun legacyResult(outcome: ProcessOutcome): PaymentResult? =
-    when (outcome) {
+// (refusals were shown in the form; the sheet opened provider pages itself).
+private fun legacyResult(outcome: ProcessOutcome, completion: Boolean, last: SessionTransaction?): PaymentResult? {
+    if (completion) {
+        // 1.x, back from the provider's page: paid, a decline, or still processing.
+        return when (outcome) {
+            is ProcessOutcome.Complete -> PaymentResult.Complete(outcome.transaction)
+            is ProcessOutcome.Failed ->
+                if (outcome.error.declineCode != null) PaymentResult.Failed(outcome.error, outcome.transaction ?: last) else last?.let { PaymentResult.Processing(it) }
+            is ProcessOutcome.Processing -> (outcome.transaction ?: last)?.let { PaymentResult.Processing(it, outcome.instruction) }
+            is ProcessOutcome.RequiresAction -> null
+        }
+    }
+    return when (outcome) {
         is ProcessOutcome.Complete -> PaymentResult.Complete(outcome.transaction)
         is ProcessOutcome.Processing -> outcome.transaction?.let { txn ->
             if (outcome.kind == ProcessingKind.Pending) {
@@ -124,9 +139,7 @@ private fun legacyResult(outcome: ProcessOutcome): PaymentResult? =
         }
         is ProcessOutcome.RequiresAction -> outcome.transaction?.let { txn ->
             when {
-                outcome.action == "client_session" && outcome.clientSession != null ->
-                    PaymentResult.RequiresAction(ActionKind.ClientSession, outcome.url, txn, outcome.clientSession)
-                outcome.url == null -> null
+                outcome.url == null || outcome.action == "client_session" -> null
                 outcome.action == "redirect" -> PaymentResult.RequiresAction(ActionKind.Redirect, outcome.url, txn)
                 outcome.action == "confirm" -> PaymentResult.RequiresAction(ActionKind.Confirm, outcome.url, txn)
                 outcome.action == "confirm_3ds" -> PaymentResult.RequiresAction(ActionKind.Confirm3ds, outcome.url, txn)
@@ -136,22 +149,44 @@ private fun legacyResult(outcome: ProcessOutcome): PaymentResult? =
         is ProcessOutcome.Failed ->
             if (outcome.error.code == UNSUPPORTED_ACTION_CODE) PaymentResult.Failed(outcome.error, outcome.transaction) else null
     }
+}
 
 /** Keeps the sheet's engine across configuration changes; a host gone for good settles it. */
 internal class CheckoutViewModel : ViewModel() {
     private var controller: CheckoutController? = null
-    var onComplete: ((CheckoutResult) -> Unit)? = null
-    var legacy: LegacyCallbacks? = null
     private var completeReported = false
+
+    // A result that lands while no host is attached (mid configuration change) waits for the next one.
+    private var undelivered: CheckoutResult? = null
+
+    /** Set when the host itself goes away: 1.x had no callback for that. */
+    var hostLeaving = false
+
+    var legacy: LegacyCallbacks? = null
+
+    var onComplete: ((CheckoutResult) -> Unit)? = null
+        set(value) {
+            field = value
+            val waiting = undelivered
+            if (value != null && waiting != null) {
+                undelivered = null
+                value(waiting)
+            }
+        }
 
     fun controllerFor(session: () -> WajubSession, options: PresentOptions): CheckoutController =
         controller ?: CheckoutController(session(), options, viewModelScope).also { created ->
+            controller = created
             created.onFinished = { result ->
                 legacy?.let { closed(it, result) }
-                onComplete?.invoke(result)
+                val host = onComplete
+                if (host != null) host(result) else undelivered = result
+                // Done: let go of the host (its lambdas, the activity behind the browser opener).
+                created.urlOpener = null
+                legacy = null
             }
             if (legacy != null) {
-                created.onAnswer = { outcome -> legacyResult(outcome)?.let(::report) }
+                created.onAnswer = { outcome, completion -> legacyResult(outcome, completion, created.transaction)?.let(::report) }
                 viewModelScope.launch {
                     created.screen.collect { screen ->
                         if (screen is SheetScreen.Success && !completeReported) {
@@ -160,7 +195,6 @@ internal class CheckoutViewModel : ViewModel() {
                     }
                 }
             }
-            controller = created
             created.start()
         }
 
@@ -170,64 +204,76 @@ internal class CheckoutViewModel : ViewModel() {
     }
 
     private fun closed(callbacks: LegacyCallbacks, result: CheckoutResult) {
-        when (result) {
-            is CheckoutResult.Complete -> if (!completeReported) report(PaymentResult.Complete(result.transaction ?: paidTransaction(result.payment)))
-            // As in 1.x, refusals were the form's: closing is a dismiss.
-            is CheckoutResult.Failed, is CheckoutResult.Processing, is CheckoutResult.Cancelled -> callbacks.onDismiss()
+        if (result is CheckoutResult.Complete && !completeReported) {
+            report(PaymentResult.Complete(result.transaction ?: paidTransaction(result.payment)))
         }
+        // 1.x called onDismiss when the payer closed the sheet, never when the app removed it.
+        if (!hostLeaving) callbacks.onDismiss()
+    }
+
+    fun hostGone() {
+        hostLeaving = true
+        controller?.hostGone()
     }
 
     override fun onCleared() {
-        controller?.hostGone()
+        hostGone()
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SheetHost(
+    key: Any,
     session: () -> WajubSession,
     options: PresentOptions,
     legacy: LegacyCallbacks? = null,
     onComplete: (CheckoutResult) -> Unit,
 ) {
     val context = LocalContext.current
-    // One presentation: kept across configuration changes, new each time the sheet is shown.
-    val presentation = rememberSaveable { UUID.randomUUID().toString() }
-    val model: CheckoutViewModel = viewModel(key = "wajub-checkout-$presentation")
-    val latest by rememberUpdatedState(onComplete)
-    SideEffect {
-        model.onComplete = { latest(it) }
-        model.legacy = legacy
+    // One presentation: kept across configuration changes, new each time the sheet is shown
+    // (or shown for another payment).
+    val presentation = rememberSaveable(key) { UUID.randomUUID().toString() }
+    val model: CheckoutViewModel = if (LocalViewModelStoreOwner.current != null) {
+        viewModel(key = "wajub-checkout-$presentation") { CheckoutViewModel() }
+    } else {
+        // No ViewModelStoreOwner (1.x did not need one): the sheet lives with this composition.
+        val store = remember(presentation) { ViewModelStore() }
+        DisposableEffect(store) { onDispose { store.clear() } }
+        remember(store) { ViewModelProvider(store, viewModelFactory { initializer { CheckoutViewModel() } })[CheckoutViewModel::class.java] }
     }
-    if (model.legacy == null) model.legacy = legacy
+    val latest by rememberUpdatedState(onComplete)
+    // Before the controller starts: a sheet rejected at once still reports it.
+    model.legacy = legacy
+    if (model.onComplete == null) model.onComplete = { latest(it) }
     val controller = remember(model) {
         // The device's details before the first request (the init provider may be disabled).
         WajubAndroid.install(context)
         model.controllerFor(session, options)
     }
-    SideEffect { controller.urlOpener = { url -> HostedRedirectLauncher.open(context, url) } }
+    SideEffect {
+        model.onComplete = { latest(it) }
+        controller.urlOpener = { url -> HostedRedirectLauncher.open(context, url) }
+    }
 
-    // Back from a provider's page (browser closed, app foregrounded): read the status at once.
+    // Back in the app (browser closed, app foregrounded): read the status at once.
+    // The controller completes a client session only when the payer had left for its page.
     val lifecycle = LocalLifecycleOwner.current.lifecycle
     DisposableEffect(lifecycle, controller) {
-        var away = false
         val observer = LifecycleEventObserver { _, event ->
-            when (event) {
-                Lifecycle.Event.ON_PAUSE -> away = true
-                Lifecycle.Event.ON_RESUME -> if (away) {
-                    away = false
-                    controller.onReturn()
-                }
-                else -> Unit
-            }
+            if (event == Lifecycle.Event.ON_RESUME) controller.onReturn()
         }
         lifecycle.addObserver(observer)
         onDispose { lifecycle.removeObserver(observer) }
     }
     // Left composition for good (not for a configuration change): the host went away.
-    DisposableEffect(controller) {
+    DisposableEffect(model) {
         onDispose {
-            if (context.findActivity()?.isChangingConfigurations != true) controller.hostGone()
+            if (context.findActivity()?.isChangingConfigurations == true) {
+                model.onComplete = null
+            } else {
+                model.hostGone()
+            }
         }
     }
 

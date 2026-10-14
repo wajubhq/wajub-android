@@ -187,6 +187,15 @@ class PaymentContractTest {
         runCurrent()
         assertEquals(CheckoutState.PENDING, unknown.state)
         assertEquals(1, bare.count("GET /pay/status"))
+
+        // A transaction that does not parse (no amount) is no crash: the same unknown outcome.
+        val broken = cmApi()
+            .on("POST /pay/process", Fixtures.response("process-succeeded-200") { it.getJSONObject("transaction").remove("amount") })
+            .on("GET /pay/status", Fixtures.response("status-processing"))
+        val survived = momoCheckout(broken)
+        survived.payMobileMoney()
+        runCurrent()
+        assertEquals(CheckoutState.PENDING, survived.state)
     }
 
     @Test
@@ -253,6 +262,7 @@ class PaymentContractTest {
             assertFalse(failed.error.retryable)
             assertEquals(WajubErrorType.ApiError, failed.error.type)
             assertTrue("error:unsupported_action" in recorder.events)
+            assertTrue(recorder.events.any { it.startsWith("started:") }, "it came in a 2xx: the attempt started")
         }
     }
 

@@ -7,6 +7,7 @@ import com.wajub.mobile.model.ProcessingKind
 import com.wajub.mobile.model.StepResult
 import com.wajub.mobile.model.WajubError
 import com.wajub.mobile.model.WajubLanguage
+import org.json.JSONException
 import org.json.JSONObject
 import org.json.JSONTokener
 
@@ -28,7 +29,12 @@ internal object OutcomeMapper {
             }
             return ProcessOutcome.Failed(errorOf(response), transaction)
         }
-        val raw = RawProcessResponse.fromJson(response.body)
+        // A body that does not parse (a transaction without its amount…) tells nothing: watch.
+        val raw = try {
+            RawProcessResponse.fromJson(response.body)
+        } catch (_: JSONException) {
+            return ProcessOutcome.Processing(transaction = null)
+        }
         val transaction = raw.transaction?.toModel()
         val context = transaction?.processingContext
         val unsupported = {
@@ -86,7 +92,7 @@ internal object OutcomeMapper {
             val stay = error.code.startsWith("invalid_") && (attempts ?: 0) > 0
             return StepResult.Rejected(error, attempts, canRetryHere = stay)
         }
-        return StepResult.Accepted(body.obj("transaction")?.let { RawTransaction.fromJson(it).toModel() })
+        return StepResult.Accepted(body.obj("transaction")?.let { runCatching { RawTransaction.fromJson(it).toModel() }.getOrNull() })
     }
 
     /**

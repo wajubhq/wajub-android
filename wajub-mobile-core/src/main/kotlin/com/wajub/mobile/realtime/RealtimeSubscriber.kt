@@ -10,9 +10,6 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.mapNotNull
 
-/** The longest a watch runs without an outcome (spec §13.2). */
-internal const val WATCH_CAP_MS: Long = 15 * 60 * 1000L
-
 /**
  * Pusher/Reverb for speed, with polling running next to it for the whole watch:
  * a socket only carries what happens after it subscribed, and a connected one
@@ -36,7 +33,8 @@ class RealtimeSubscriber(
             transactionId = transaction.id,
             endpoint = RealtimeEndpoint.resolve(session.echo),
             seenProcessing = transaction.status.lowercase() in setOf("processing", "partial"),
-            deadline = System.currentTimeMillis() + WATCH_CAP_MS,
+            // 1.x watched until a final status: no cap.
+            deadline = Long.MAX_VALUE,
             language = { client.language },
             schedule = PollSchedule.fixed(intervalMs),
             authUrl = authEndpoint,

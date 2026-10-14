@@ -12,9 +12,11 @@ internal object Iso8601 {
 
     /** Epoch milliseconds of `2026-10-14T09:30:00+00:00`, or null. */
     fun parse(text: String): Long? {
+        // Milliseconds at most: `.123456` would read as 123 456 ms.
+        val normalized = text.trim().replace("Z", "+00:00").replace(Regex("""\.(\d{3})\d+"""), ".$1")
         for (pattern in patterns) {
             try {
-                return SimpleDateFormat(pattern, Locale.ROOT).parse(text.trim().replace("Z", "+00:00"))?.time
+                return SimpleDateFormat(pattern, Locale.ROOT).parse(normalized)?.time
             } catch (_: ParseException) {
                 // next pattern
             }

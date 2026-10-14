@@ -247,9 +247,12 @@ class PaymentSheetUiTest {
         val results = mutableListOf<PaymentResult>()
         var dismissed = 0
         val session = api.session()
+        val shown = mutableStateOf(true)
         compose.setContent {
-            @Suppress("DEPRECATION")
-            PaymentSheet(session, onDismiss = { dismissed++ }, onResult = { results += it })
+            if (shown.value) {
+                @Suppress("DEPRECATION")
+                PaymentSheet(session, onDismiss = { dismissed++ }, onResult = { results += it })
+            }
         }
         idle()
         // In the sheet's dialog window: click through the semantics actions.
@@ -265,7 +268,26 @@ class PaymentSheetUiTest {
         compose.onNodeWithTag("wajub-approval").assertExists()
         idle(6)
         assertIs<PaymentResult.Complete>(results.last(), "and now the outcome too")
+        // The app hides it, as 1.x apps did on a result: that is no dismiss.
+        shown.value = false
+        idle()
         assertEquals(0, dismissed)
+        assertEquals(2, results.size)
+    }
+
+    @Test
+    fun `a second sheet shown while one is open reports sheet_already_presented`() {
+        val api = FakeApi().on("GET /pay/session", "session-sandbox-cm").on("GET /pay/sdk-config", "sdk-config-sandbox")
+        val first = mutableListOf<CheckoutResult>()
+        val second = mutableListOf<CheckoutResult>()
+        val options = PresentOptions(locale = "en", realtime = RealtimeOptions(enabled = false))
+        compose.setContent {
+            PaymentSheet(api.session(), options) { first += it }
+            PaymentSheet(api.session(), options) { second += it }
+        }
+        idle()
+        assertEquals("sheet_already_presented", assertIs<CheckoutResult.Failed>(second.single()).error.code)
+        assertTrue(first.isEmpty(), "the open sheet is left alone")
     }
 
     @Test

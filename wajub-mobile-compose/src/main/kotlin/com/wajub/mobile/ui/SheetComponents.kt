@@ -70,8 +70,18 @@ internal val LocalWajubImageLoader = compositionLocalOf<ImageLoader?> { null }
 @Composable
 internal fun imageLoader(): ImageLoader {
     LocalWajubImageLoader.current?.let { return it }
-    val context = LocalContext.current.applicationContext
-    return remember(context) { ImageLoader.Builder(context).components { add(SvgDecoder.Factory()) }.build() }
+    return SheetImages.loader(LocalContext.current.applicationContext)
+}
+
+// One image loader (and its memory cache) for every sheet.
+private object SheetImages {
+    @Volatile
+    private var shared: ImageLoader? = null
+
+    fun loader(context: android.content.Context): ImageLoader =
+        shared ?: synchronized(this) {
+            shared ?: ImageLoader.Builder(context).components { add(SvgDecoder.Factory()) }.build().also { shared = it }
+        }
 }
 
 /** Whether the skeleton pulses — read by the tests (AP-07). */

@@ -17,6 +17,7 @@ import com.wajub.mobile.model.SessionData
 import com.wajub.mobile.model.SessionTransaction
 import com.wajub.mobile.model.StepKind
 import com.wajub.mobile.model.StepResult
+import com.wajub.mobile.model.UNSUPPORTED_ACTION_CODE
 import com.wajub.mobile.model.WajubError
 import com.wajub.mobile.model.WajubLanguage
 import com.wajub.mobile.realtime.PaymentWatcher
@@ -106,11 +107,11 @@ class CheckoutController internal constructor(
     var onFinished: ((CheckoutResult) -> Unit)? = null
 
     /**
-     * Every answer to a payment request — `/pay/process`, `/pay/client-session`
-     * and its completion — before the sheet acts on it. The 1.x `PaymentSheet`
-     * reports its results from it.
+     * Every answer to a payment request — `/pay/process`, `/pay/client-session`,
+     * and (`completion` true) `/pay/client-session/complete` — before the
+     * sheet acts on it. The 1.x `PaymentSheet` reports its results from it.
      */
-    var onAnswer: ((ProcessOutcome) -> Unit)? = null
+    var onAnswer: ((outcome: ProcessOutcome, completion: Boolean) -> Unit)? = null
 
     /** The payment as last seen (from the session, an answer, or the status). */
     val transaction: SessionTransaction? get() = lastTransaction
@@ -153,6 +154,8 @@ class CheckoutController internal constructor(
     private var watchJob: Job? = null
     private var autoClose: Job? = null
     private var stepTimer: Job? = null
+
+    internal val isAlive: Boolean get() = !finished && scope.coroutineContext[Job]?.isActive != false
 
     /** Loads the session and shows the first screen. */
     fun start() {
@@ -332,7 +335,7 @@ class CheckoutController internal constructor(
 
     private fun canEditForm(): Boolean {
         val current = _screen.value
-        return !finished && (current is SheetScreen.Methods || (current is SheetScreen.Form && !current.busy))
+        return !finished && cancelling == null && (current is SheetScreen.Methods || (current is SheetScreen.Form && !current.busy))
     }
 
     private fun formFor(m: PaymentMethod): SheetScreen.Form {
@@ -567,9 +570,11 @@ class CheckoutController internal constructor(
     // tokenizing included): a dismiss then resolves `processing`, and nothing
     // is sent once the sheet has closed.
     private fun submit(form: SheetScreen.Form, channel: String, request: suspend (AltchaSolution?, String) -> ProcessOutcome) {
+        if (cancelling != null || finished) return
         forms[form.method.id] = form
         paymentStarted = false
         attemptChannel = channel
+        lastUrl = null
         attemptInFlight = true
         altchaReloaded = false
         lastSeen = null
@@ -633,7 +638,7 @@ class CheckoutController internal constructor(
     // The answer of a payment request (spec §9).
     private suspend fun handleOutcome(outcome: ProcessOutcome, form: SheetScreen.Form, key: String) {
         if (finished) return
-        fire { onAnswer?.invoke(outcome) }
+        fire { onAnswer?.invoke(outcome, false) }
         val unansweredSince = (outcome as? ProcessOutcome.Processing)?.unansweredSince
         unansweredKey = if (unansweredSince != null) key else null
         when (outcome) {
@@ -680,7 +685,11 @@ class CheckoutController internal constructor(
                     else -> showFailed(WajubError.of("unsupported_action", lang))
                 }
             }
-            is ProcessOutcome.Failed -> onRefused(outcome.error, outcome.transaction, form)
+            is ProcessOutcome.Failed -> {
+                // An action the sheet cannot take still came in a 2xx: the attempt started.
+                if (outcome.error.code == UNSUPPORTED_ACTION_CODE && outcome.error.httpStatus == null) started()
+                onRefused(outcome.error, outcome.transaction, form)
+            }
         }
     }
 
@@ -814,7 +823,7 @@ class CheckoutController internal constructor(
                 scope.launch {
                     val outcome = session.confirmClientSession(id)
                     if (finished || _screen.value !is SheetScreen.Pending) return@launch
-                    fire { onAnswer?.invoke(outcome) }
+                    fire { onAnswer?.invoke(outcome, true) }
                     when (outcome) {
                         is ProcessOutcome.Complete -> success(outcome.transaction, family())
                         is ProcessOutcome.Failed -> {
@@ -893,7 +902,9 @@ class CheckoutController internal constructor(
     }
 
     private fun onStepResult(step: SheetScreen.Step, result: StepResult) {
-        if (finished) return
+        // A late answer (the status already decided) changes nothing.
+        val current = _screen.value
+        if (finished || current !is SheetScreen.Step || current.stepId != step.stepId || !current.busy) return
         when (result) {
             is StepResult.Accepted -> {
                 val txn = result.transaction
@@ -913,7 +924,9 @@ class CheckoutController internal constructor(
                     }
                 }
             }
-            is StepResult.Rejected -> if (result.canRetryHere) {
+            is StepResult.Rejected -> if (result.error.httpStatus == 410) {
+                showEnded(SheetScreen.Expired(result.error))
+            } else if (result.canRetryHere) {
                 val text = result.error.localized(lang, mapOf("n" to (result.attemptsRemaining ?: 0).toString())).message
                 showIfStillOn(step) { it.copy(busy = false, error = text, attemptsRemaining = result.attemptsRemaining, values = emptyMap()) }
             } else {
@@ -953,6 +966,7 @@ class CheckoutController internal constructor(
     // ── Watching (spec §13) ──────────────────────────────────────────────
 
     private fun watch(seenProcessing: Boolean) {
+        if (finished) return
         val running = watcher
         if (running != null && watchJob?.isActive == true) {
             if (seenProcessing) running.markSeenProcessing()
@@ -970,8 +984,16 @@ class CheckoutController internal constructor(
         unansweredCheck?.cancel()
         unansweredCheck = scope.launch {
             delay((sentAt + UNANSWERED_AFTER_MS - clock()).coerceAtLeast(0))
-            val seen = lastSeen
-            if (_screen.value !is SheetScreen.Pending || sawProcessing || seen?.status != "pending" || seen.errorCode != null) return@launch
+            // Decide on a status read (the polls may still be failing): check again until one says.
+            while (true) {
+                if (_screen.value !is SheetScreen.Pending || sawProcessing || unansweredKey == null) return@launch
+                val seen = lastSeen
+                if (seen != null) {
+                    if (seen.status != "pending" || seen.errorCode != null) return@launch
+                    break
+                }
+                delay(UNANSWERED_RECHECK_MS)
+            }
             stopWatching()
             attemptInFlight = false
             val error = WajubError.of("network_error", lang)
@@ -993,7 +1015,11 @@ class CheckoutController internal constructor(
         when (event) {
             is WatchEvent.StatusChanged -> {
                 lastSeen = event.status
-                if (event.status.status in setOf("processing", "partial")) sawProcessing = true
+                if (event.status.status in setOf("processing", "partial")) {
+                    sawProcessing = true
+                    // It arrived: a later Pay is a new attempt, with a new key.
+                    unansweredKey = null
+                }
                 lastTransaction = lastTransaction?.copy(status = event.status.status)
             }
             is WatchEvent.Succeeded -> success(lastTransaction?.copy(status = event.status.status), family())
@@ -1011,6 +1037,7 @@ class CheckoutController internal constructor(
 
     private fun success(txn: SessionTransaction?, methodFamily: String) {
         if (finished) return
+        unansweredKey = null
         stopWatching()
         attemptInFlight = false
         val t = txn ?: lastTransaction ?: return
@@ -1028,6 +1055,7 @@ class CheckoutController internal constructor(
 
     private fun showFailed(error: WajubError, retryAt: Long? = null) {
         if (finished) return
+        unansweredKey = null
         stopWatching()
         attemptInFlight = false
         clientSessionId = null
@@ -1037,6 +1065,7 @@ class CheckoutController internal constructor(
 
     private fun showEnded(screen: SheetScreen) {
         if (finished) return
+        unansweredKey = null
         stopWatching()
         attemptInFlight = false
         show(screen)
@@ -1085,7 +1114,12 @@ class CheckoutController internal constructor(
 
     /** The payer swiped the sheet away, pressed back, or tapped outside. */
     fun dismiss() {
-        if (finished || cancelling != null) return
+        if (finished) return
+        if (cancelling != null) {
+            // The cancel under way settles the sheet; the sheet hides now.
+            _closing.value = true
+            return
+        }
         val current = _screen.value
         settledResult(current)?.let {
             finish(it)
@@ -1131,12 +1165,13 @@ class CheckoutController internal constructor(
             else -> null
         }
 
+    // Runs on a scope of its own: a cancel the payer asked for settles the
+    // sheet even when the host is gone. CANCELLED is shown once it is done.
     private fun cancelAndFinish(reason: CancelReason, showCancelled: Boolean) {
         cancelling = reason
         if (!showCancelled) _closing.value = true
         loadJob?.cancel()
         readyTimer?.cancel()
-        if (showCancelled) show(SheetScreen.Cancelled(null))
         detached.launch {
             val response = try {
                 session.cancelRaw()
@@ -1146,6 +1181,7 @@ class CheckoutController internal constructor(
                 return@launch
             }
             if (response.isSuccess) {
+                if (showCancelled) show(SheetScreen.Cancelled(null))
                 finish(CheckoutResult.Cancelled(reason, response.body.str("redirect_url")))
                 return@launch
             }
@@ -1159,12 +1195,8 @@ class CheckoutController internal constructor(
                 "expired" -> CheckoutResult.Failed(WajubError.of("session_expired", lang), txn)
                 else -> null
             } ?: CheckoutResult.Cancelled(reason, null)
-            if (result is CheckoutResult.Complete && showCancelled) {
-                cancelling = null
-                success(result.transaction, "unknown")
-            } else {
-                finish(result)
-            }
+            if (result is CheckoutResult.Complete) fire { callbacks.onSuccess?.invoke(result.payment) }
+            finish(result)
         }
     }
 
@@ -1240,6 +1272,7 @@ class CheckoutController internal constructor(
     internal companion object {
         const val RESEND_AFTER_MS: Long = 60_000L
         const val UNANSWERED_AFTER_MS: Long = 60_000L
+        private const val UNANSWERED_RECHECK_MS: Long = 5_000L
         private val BIRTHDAY = Regex("""^\d{4}-\d{2}-\d{2}$""")
         private val BELONGS_TO = Regex("""belongs to ([A-Za-z_]+)""", RegexOption.IGNORE_CASE)
         private val LOG: Logger = Logger.getLogger("Wajub")
@@ -1250,8 +1283,15 @@ class CheckoutController internal constructor(
 internal object ActiveSheet {
     private val current = AtomicReference<CheckoutController?>(null)
 
-    fun claim(controller: CheckoutController): Boolean =
-        current.compareAndSet(null, controller) || current.get() === controller
+    fun claim(controller: CheckoutController): Boolean {
+        while (true) {
+            val open = current.get()
+            if (open === controller) return true
+            // A sheet whose host cancelled its scope without settling it no longer blocks.
+            if (open != null && open.isAlive) return false
+            if (current.compareAndSet(open, controller)) return true
+        }
+    }
 
     fun release(controller: CheckoutController) {
         current.compareAndSet(controller, null)

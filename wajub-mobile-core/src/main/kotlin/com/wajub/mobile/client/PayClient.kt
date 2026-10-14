@@ -100,9 +100,9 @@ class PayClient internal constructor(
     // an answer that is not a 2xx, an IOException when none came back.
 
     suspend fun getSession(token: String): SessionData =
-        RawSessionResponse.fromJson(legacySuccess(sendRaw(token, ApiCall.Session))).toModel()
+        RawSessionResponse.fromJson(legacySuccess(legacySend(token, ApiCall.Session))).toModel()
 
-    suspend fun getSdkConfig(token: String): SdkConfig = parseSdkConfig(legacySuccess(sendRaw(token, ApiCall.SdkConfig)))
+    suspend fun getSdkConfig(token: String): SdkConfig = parseSdkConfig(legacySuccess(legacySend(token, ApiCall.SdkConfig)))
 
     /** `GET /pay/session`, its errors mapped as the spec says (load errors). */
     internal suspend fun fetchSession(token: String): SessionData =
@@ -115,7 +115,7 @@ class PayClient internal constructor(
      */
     suspend fun process(token: String, channel: String, data: Map<String, Any?>): RawProcessResponse {
         val payload = JSONObject().put("channel", channel).put("data", mapToJson(data))
-        val response = sendRaw(token, ApiCall.Process, payload, idempotencyKey = newIdempotencyKey())
+        val response = legacySend(token, ApiCall.Process, payload, idempotencyKey = newIdempotencyKey())
         return RawProcessResponse.fromJson(legacySuccess(response))
     }
 
@@ -140,7 +140,7 @@ class PayClient internal constructor(
         restart: Boolean = false,
     ): RawProcessResponse {
         val payload = clientSessionPayload(channel, email, name, returnUrl, restart, emptyMap())
-        return RawProcessResponse.fromJson(legacySuccess(sendRaw(token, ApiCall.ClientSession, payload)))
+        return RawProcessResponse.fromJson(legacySuccess(legacySend(token, ApiCall.ClientSession, payload)))
     }
 
     /**
@@ -150,11 +150,11 @@ class PayClient internal constructor(
      */
     suspend fun completeClientSession(token: String, clientSessionId: String): RawProcessResponse {
         val payload = JSONObject().put("client_session_id", clientSessionId)
-        return RawProcessResponse.fromJson(legacySuccess(sendRaw(token, ApiCall.ClientSessionComplete, payload)))
+        return RawProcessResponse.fromJson(legacySuccess(legacySend(token, ApiCall.ClientSessionComplete, payload)))
     }
 
     suspend fun cancel(token: String): CancelResult =
-        CancelResult(redirectUrl = legacySuccess(sendRaw(token, ApiCall.Cancel, JSONObject())).str("redirect_url"))
+        CancelResult(redirectUrl = legacySuccess(legacySend(token, ApiCall.Cancel, JSONObject())).str("redirect_url"))
 
     internal fun clientSessionPayload(
         channel: String,
@@ -178,6 +178,14 @@ class PayClient internal constructor(
     internal fun clientHeader(): String = environment().clientHeader
 
     /** The body of a 2xx, or the [WajubError] of any other answer. */
+    // 1.x threw OkHttp's own IOException (a SocketTimeoutException…) when no answer came back.
+    private suspend fun legacySend(token: String, call: ApiCall, body: JSONObject? = null, idempotencyKey: String? = null): ApiResponse =
+        try {
+            sendRaw(token, call, body, idempotencyKey)
+        } catch (failure: TransportException) {
+            throw (failure.cause as? java.io.IOException) ?: failure
+        }
+
     private fun legacySuccess(response: ApiResponse): JSONObject {
         if (!response.isSuccess) throw WajubError.legacy(response.status, response.body, response.correlationId, response.retryAfter)
         return response.body

@@ -308,6 +308,48 @@ class TransportContractTest {
         runCurrent()
         assertEquals(key, lost.requests("POST /pay/process").last().headers["Idempotency-Key"], "the same key: a replay, never a second charge")
         assertEquals(CheckoutState.APPROVAL_REQUIRED, again.state)
+
+        // As on a real phone: each try times out after 60 s, so the first status is read
+        // only once the 60 s have passed — the check waits for that read.
+        val slow = cmApi()
+            .on("POST /pay/process", FakeResponse.timeout(delayMs = 60_000))
+            .on("GET /pay/status", FakeResponse.status(503), Fixtures.response("status-processing") { it.getJSONObject("transaction").put("status", "pending") })
+        val (patient, _) = checkout(slow, PresentOptions(sessionToken = "t", locale = "en"))
+        patient.start()
+        runCurrent()
+        patient.selectMethod("mobile_money")
+        patient.setPhone("670000000")
+        patient.payMobileMoney()
+        // 3 tries of 60 s, then a failing poll (backed off 10 s), then `pending`.
+        advanceTimeBy(185_000)
+        runCurrent()
+        assertEquals(CheckoutState.PENDING, patient.state)
+        advanceTimeBy(30_000)
+        runCurrent()
+        assertEquals("Connection error. Check your network.", assertIs<SheetScreen.Form>(patient.screen.value).banner)
+
+        // It did arrive (the watch saw it processing) and then failed: Try again is a new attempt, with a new key.
+        val arrived = cmApi()
+            .on("POST /pay/process", FakeResponse.timeout())
+            .on(
+                "GET /pay/status",
+                Fixtures.response("status-processing"),
+                Fixtures.response("status-pending-attempt-refused"),
+            )
+        val (retrying, _) = checkout(arrived, PresentOptions(sessionToken = "t", locale = "en"))
+        retrying.start()
+        runCurrent()
+        retrying.selectMethod("mobile_money")
+        retrying.setPhone("670000000")
+        retrying.payMobileMoney()
+        advanceTimeBy(15_000)
+        runCurrent()
+        assertEquals(CheckoutState.FAILED, retrying.state)
+        val firstKey = arrived.requests("POST /pay/process").first().headers.getValue("Idempotency-Key")
+        retrying.tryAgain()
+        retrying.payMobileMoney()
+        runCurrent()
+        assertNotEquals(firstKey, arrived.requests("POST /pay/process").last().headers["Idempotency-Key"])
     }
 
     @Test

@@ -37,6 +37,16 @@ class CompatibilityTest {
     }
 
     @Test
+    fun `the 1_x poller waits for the session as it did`() = runTest {
+        val api = FakeApi()
+            .on("GET /pay/session", FakeResponse.network(), FakeResponse.network(), FakeResponse.network(), FakeResponse.network(), Fixtures.response("session-processing-mobile-money"))
+            .on("GET /pay/status", FakeResponse.status(200, """{"transaction":{"status":"succeeded"}}"""))
+        @Suppress("DEPRECATION")
+        val results = fakeSession(api).watchStatusPolling(intervalMs = 50).toList()
+        assertIs<PaymentResult.Complete>(results.last())
+    }
+
+    @Test
     fun `the 1_x watchers report an ended payment with the 1_x error`() = runTest {
         val api = FakeApi()
             .on("GET /pay/session", Fixtures.response("session-processing-mobile-money"))

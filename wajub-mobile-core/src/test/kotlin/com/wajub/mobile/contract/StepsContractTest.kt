@@ -112,6 +112,21 @@ class StepsContractTest {
         controller.submitStep()
         runCurrent()
         assertEquals(CheckoutState.SUCCESS, controller.state)
+
+        // The status decides first: a verify answer arriving later changes nothing.
+        val late = cmApi()
+            .on("POST /pay/process", Fixtures.response("process-requires-otp"))
+            .on("POST /pay/otp/verify", Fixtures.response("otp-verify-success").let { FakeResponse(it.status, it.body, delayMs = 8_000) })
+        val events = Recorder()
+        val racing = answered(late, events)
+        late.set("GET /pay/status", Fixtures.response("status-succeeded"))
+        racing.setStepField("code", "123456")
+        racing.submitStep()
+        advanceTimeBy(5_001)
+        assertEquals(CheckoutState.SUCCESS, racing.state)
+        advanceTimeBy(5_000)
+        assertEquals(CheckoutState.SUCCESS, racing.state)
+        assertEquals(1, events.events.count { it.startsWith("success:") })
     }
 
     @Test
@@ -154,6 +169,16 @@ class StepsContractTest {
             assertEquals(CheckoutState.FAILED, controller.state)
             assertTrue("error:${failed.error.code}" in events.events)
         }
+
+        // The session ended meanwhile (410): expired.
+        val gone = cmApi()
+            .on("POST /pay/process", Fixtures.response("process-requires-otp"))
+            .on("POST /pay/otp/verify", Fixtures.response("error-410-process-session-ended"))
+        val ended = answered(gone)
+        ended.setStepField("code", "123456")
+        ended.submitStep()
+        runCurrent()
+        assertEquals(CheckoutState.EXPIRED, ended.state)
     }
 
     @Test
