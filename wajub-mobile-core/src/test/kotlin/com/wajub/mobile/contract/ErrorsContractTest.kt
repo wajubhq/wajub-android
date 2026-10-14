@@ -231,6 +231,57 @@ class ErrorsContractTest {
         assertEquals(2, strict.count("GET /pay/session"), "the session (and its challenge) reloaded once")
         assertEquals(2, strict.count("POST /pay/process"))
         assertEquals("security_check_failed", assertIs<SheetScreen.Failed>(refused.screen.value).error.code)
+
+        // A solution is used once: the next attempt solves the session's new challenge.
+        fun challengeFor(n: Int) = JSONObject(altcha.toString())
+            .put("challenge", MessageDigest.getInstance("SHA-256").digest("$salt$n".toByteArray()).joinToString("") { "%02x".format(it) })
+        val twice = FakeApi()
+            .on(
+                "GET /pay/session",
+                Fixtures.response("session-cm-aggregate") { it.put("altcha", altcha) },
+                Fixtures.response("session-cm-aggregate") { it.put("altcha", challengeFor(77)) },
+            )
+            .on("GET /pay/sdk-config", Fixtures.response("sdk-config-cm-stripe"))
+            .on("POST /pay/process", Fixtures.response("process-failed-402"), Fixtures.response("process-processing-mobile-money-sandbox"))
+            .on("GET /pay/status", Fixtures.response("status-processing"))
+        val (again, _) = checkout(twice)
+        again.start()
+        runCurrent()
+        again.selectMethod("mobile_money")
+        again.setPhone("670000000")
+        again.payMobileMoney()
+        runCurrent()
+        again.tryAgain()
+        again.payMobileMoney()
+        runCurrent()
+        val numbers = twice.requests("POST /pay/process").map { org.json.JSONObject(it.body!!).getJSONObject("data").getJSONObject("altcha").getInt("number") }
+        assertEquals(listOf(number, 77), numbers)
+
+        // Nothing leaves when the sheet closes while a challenge is being fetched.
+        val slow = FakeApi()
+            .on(
+                "GET /pay/session",
+                Fixtures.response("session-cm-aggregate") { it.put("altcha", altcha) },
+                Fixtures.response("session-cm-aggregate") { it.put("altcha", challengeFor(78)) }.let { FakeResponse(it.status, it.body, delayMs = 5_000) },
+            )
+            .on("GET /pay/sdk-config", Fixtures.response("sdk-config-cm-stripe"))
+            .on("POST /pay/process", Fixtures.response("process-failed-402"))
+        val (closing, closingEvents) = checkout(slow)
+        closing.start()
+        runCurrent()
+        closing.selectMethod("mobile_money")
+        closing.setPhone("670000000")
+        closing.payMobileMoney()
+        runCurrent()
+        closing.tryAgain()
+        closing.payMobileMoney()
+        runCurrent()
+        closing.dismiss()
+        testScheduler.advanceTimeBy(10_000)
+        testScheduler.runCurrent()
+        assertIs<com.wajub.mobile.checkout.CheckoutResult.Processing>(closingEvents.result)
+        assertEquals(1, slow.count("POST /pay/process"))
+        assertEquals(0, slow.count("POST /pay/cancel"))
     }
 
     @Test

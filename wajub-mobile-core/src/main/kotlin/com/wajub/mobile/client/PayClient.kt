@@ -110,11 +110,12 @@ class PayClient internal constructor(
 
     /**
      * POST /pay/process with a fresh Idempotency-Key, reused by its automatic
-     * retries, and the device signals as `data._client`. Throws [WajubError]
-     * for an answer that is not a 2xx.
+     * retries, and [data] as given. Throws [WajubError] for an answer that is
+     * not a 2xx. `WajubSession.process(ProcessRequest)` adds the device signals.
      */
     suspend fun process(token: String, channel: String, data: Map<String, Any?>): RawProcessResponse {
-        val response = sendRaw(token, ApiCall.Process, processPayload(channel, data), idempotencyKey = newIdempotencyKey())
+        val payload = JSONObject().put("channel", channel).put("data", mapToJson(data))
+        val response = sendRaw(token, ApiCall.Process, payload, idempotencyKey = newIdempotencyKey())
         return RawProcessResponse.fromJson(legacySuccess(response))
     }
 

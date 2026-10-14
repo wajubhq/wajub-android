@@ -69,11 +69,12 @@ fun PaymentSheet(session: WajubSession, options: PresentOptions = PresentOptions
 }
 
 /**
- * The 1.x sheet. [onResult] is called as in 1.x: with each answer to a
+ * The 1.x sheet. [onResult] is called as in 1.x, with each answer to a
  * payment request (`RequiresAction` for a push approval or a provider page,
- * `Complete`, `Processing`) — and now also when the payment succeeds, or the
- * sheet closes on a failure; [onDismiss] when the payer closes it otherwise.
- * Redirects, approvals, confirmation steps and watching happen in the sheet.
+ * `Complete`, `Processing`, `Failed` for a step it cannot take) — and with
+ * `Complete` when the payment succeeds; [onDismiss] when the sheet closes
+ * otherwise. Redirects, approvals, confirmation steps and watching happen in
+ * the sheet.
  */
 @Deprecated(
     "Use PaymentSheet(session, PresentOptions(), onComplete): its CheckoutResult also says why a sheet closed.",
@@ -171,8 +172,8 @@ internal class CheckoutViewModel : ViewModel() {
     private fun closed(callbacks: LegacyCallbacks, result: CheckoutResult) {
         when (result) {
             is CheckoutResult.Complete -> if (!completeReported) report(PaymentResult.Complete(result.transaction ?: paidTransaction(result.payment)))
-            is CheckoutResult.Failed -> report(PaymentResult.Failed(result.error, result.transaction))
-            is CheckoutResult.Processing, is CheckoutResult.Cancelled -> callbacks.onDismiss()
+            // As in 1.x, refusals were the form's: closing is a dismiss.
+            is CheckoutResult.Failed, is CheckoutResult.Processing, is CheckoutResult.Cancelled -> callbacks.onDismiss()
         }
     }
 

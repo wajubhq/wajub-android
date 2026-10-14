@@ -173,7 +173,9 @@ class PaymentWatcher internal constructor(
                         when {
                             response.isSuccess -> {
                                 failures = 0
-                                if (handle(OutcomeMapper.status(response.body))) return@channelFlow
+                                // A body without a status says nothing: keep watching.
+                                val polled = OutcomeMapper.statusOrNull(response.body)
+                                if (polled != null && handle(polled)) return@channelFlow
                                 wait = if (socketConnected) {
                                     schedule.withSocketMs
                                 } else {

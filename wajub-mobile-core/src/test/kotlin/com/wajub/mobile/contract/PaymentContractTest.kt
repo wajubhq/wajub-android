@@ -177,6 +177,16 @@ class PaymentContractTest {
         // Its message says "Confirm the transaction on your phone": the status says paid.
         assertEquals(CheckoutState.SUCCESS, controller.state)
         assertEquals("trx_Succeeded0000000000000", assertIs<SheetScreen.Success>(controller.screen.value).payment.id)
+
+        // A 2xx without a transaction tells nothing: watch the status.
+        val bare = cmApi()
+            .on("POST /pay/process", FakeResponse.status(200, """{"code":200,"status":"OK","message":"Paid."}"""))
+            .on("GET /pay/status", Fixtures.response("status-processing"))
+        val unknown = momoCheckout(bare)
+        unknown.payMobileMoney()
+        runCurrent()
+        assertEquals(CheckoutState.PENDING, unknown.state)
+        assertEquals(1, bare.count("GET /pay/status"))
     }
 
     @Test

@@ -36,7 +36,9 @@ internal object OutcomeMapper {
         }
         return when (val action = raw.action) {
             null -> when {
-                transaction != null && transaction.status.lowercase() in SUCCESS_STATUSES -> ProcessOutcome.Complete(transaction)
+                // No transaction, nothing to do: the outcome is unknown, watch the status.
+                transaction == null -> ProcessOutcome.Processing(transaction = null)
+                transaction.status.lowercase() in SUCCESS_STATUSES -> ProcessOutcome.Complete(transaction)
                 context?.isUssd == true -> ProcessOutcome.Processing(transaction, context.payerInstruction, ProcessingKind.Ussd)
                 mobileMoney || context?.isMobileMoney == true ->
                     ProcessOutcome.Processing(transaction, context?.payerInstruction, ProcessingKind.Approval)
@@ -108,11 +110,14 @@ internal object OutcomeMapper {
         }
     }
 
-    /** `GET /pay/status` → `{transaction: {reference, status, error_code?, payer_message?}}`. */
-    fun status(body: JSONObject): PaymentStatus {
+    /** `GET /pay/status` → `{transaction: {reference, status, error_code?, payer_message?}}`; null without a status. */
+    fun statusOrNull(body: JSONObject): PaymentStatus? {
         val t = body.obj("transaction") ?: body
-        return PaymentStatus(t.str("reference"), t.str("status").orEmpty().lowercase(), t.str("error_code"), t.str("payer_message"))
+        val status = t.str("status") ?: return null
+        return PaymentStatus(t.str("reference"), status.lowercase(), t.str("error_code"), t.str("payer_message"))
     }
+
+    fun status(body: JSONObject): PaymentStatus = statusOrNull(body) ?: PaymentStatus(null, "")
 
     /** The realtime event's data: a JSON object, or a JSON string holding one. */
     fun event(data: Any?): PaymentStatus? {

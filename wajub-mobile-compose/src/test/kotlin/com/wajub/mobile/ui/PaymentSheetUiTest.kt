@@ -283,6 +283,7 @@ class PaymentSheetUiTest {
         activity.pause().stop().destroy()
         idle()
         assertEquals(listOf<CheckoutResult>(CheckoutResult.Cancelled(CancelReason.HostGone, null)), SheetTestActivity.results)
+        assertEquals(0, api.count("POST /pay/cancel"), "the host going away never cancels the payment")
     }
 }
 

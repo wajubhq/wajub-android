@@ -132,6 +132,7 @@ class CheckoutController internal constructor(
     private var lastUrl: String? = null
     private var leftForBrowser = false
     private var clientSessionId: String? = null
+    // A solution is good for one request: the next one solves a new challenge.
     private var altcha: Deferred<AltchaSolution?>? = null
     private var altchaReloaded = false
     private var resubmit: (suspend () -> Unit)? = null
@@ -484,15 +485,28 @@ class CheckoutController internal constructor(
         }
     }
 
-    /** Pay with the `pm_…` Stripe's card widget made. */
-    fun payStripe(paymentMethodId: String) {
+    /**
+     * Pay with Stripe's card widget: [createPaymentMethod] tokenizes the card
+     * (`pm_…`) once the attempt has started; its error message shows on the form.
+     */
+    fun payStripe(createPaymentMethod: suspend () -> String) {
         val current = _screen.value as? SheetScreen.Form ?: return
         if (current.busy || finished || current.card?.flavor !is CardFlavor.Stripe) return
-        val data = buildMap<String, Any?> {
-            put("payment_method_id", paymentMethodId)
-            current.card.values["card_holder"]?.takeIf { it.isNotBlank() }?.let { put("card_holder", it.trim()) }
-        }
+        val holder = current.card.values["card_holder"]?.trim()?.takeIf { it.isNotBlank() }
         submit(current, current.method.slug) { solution, key ->
+            val id = try {
+                createPaymentMethod()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                ensureOpen()
+                throw CardNotTokenized(e.message ?: message("validation_error"))
+            }
+            ensureOpen()
+            val data = buildMap<String, Any?> {
+                put("payment_method_id", id)
+                holder?.let { put("card_holder", it) }
+            }
             session.process(ProcessRequest(current.method.slug, withExtras(data, solution), key))
         }
     }
@@ -549,21 +563,61 @@ class CheckoutController internal constructor(
 
     // One press of Pay: the request and its answer. Its Idempotency-Key is new,
     // unless the previous request got no answer at all.
+    // The attempt is in flight from the press (Altcha solving and card
+    // tokenizing included): a dismiss then resolves `processing`, and nothing
+    // is sent once the sheet has closed.
     private fun submit(form: SheetScreen.Form, channel: String, request: suspend (AltchaSolution?, String) -> ProcessOutcome) {
         forms[form.method.id] = form
         paymentStarted = false
         attemptChannel = channel
         attemptInFlight = true
+        altchaReloaded = false
         lastSeen = null
         sawProcessing = false
         show(form.copy(busy = true, banner = null))
-        val run: suspend (String) -> Unit = { key ->
-            val outcome = request(altcha?.await(), key)
+        val run: suspend (String) -> Unit = run@{ key ->
+            val solution = takeAltcha()
+            if (finished) return@run
+            val outcome = try {
+                request(solution, key)
+            } catch (_: SheetClosed) {
+                return@run
+            } catch (failure: CardNotTokenized) {
+                attemptInFlight = false
+                show(form.copy(busy = false, banner = failure.message))
+                return@run
+            }
             handleOutcome(outcome, form, key)
         }
         resubmit = { run(UUID.randomUUID().toString()) }
         val key = unansweredKey ?: UUID.randomUUID().toString()
         scope.launch { run(key) }
+    }
+
+    /** Throws when the sheet has closed: the last check before a request leaves. */
+    private fun ensureOpen() {
+        if (finished) throw SheetClosed()
+    }
+
+    private class SheetClosed : Exception()
+
+    private class CardNotTokenized(message: String) : Exception(message)
+
+    // The prepared solution once; after that, a new challenge (a session reload) each time.
+    private suspend fun takeAltcha(): AltchaSolution? {
+        altcha?.let { prepared ->
+            altcha = null
+            return prepared.await()
+        }
+        if (_session.value?.altcha == null) return null
+        val challenge = try {
+            session.session(forceRefresh = true).altcha
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        } ?: return null
+        return scope.async(compute) { Altcha.solve(challenge) }.await()
     }
 
     private fun family(): String = method?.family ?: "unknown"
@@ -645,19 +699,8 @@ class CheckoutController internal constructor(
                     showFailed(WajubError.of("security_check_failed", lang))
                     return
                 }
-                // A new challenge, once, then the same payment again.
+                // A new challenge (taking a solution reloads one), once, then the same payment again.
                 altchaReloaded = true
-                val reloaded = try {
-                    session.session(forceRefresh = true)
-                } catch (_: Exception) {
-                    null
-                }
-                val challenge = reloaded?.altcha
-                if (challenge == null) {
-                    showFailed(WajubError.of("security_check_failed", lang))
-                    return
-                }
-                altcha = scope.async(compute) { Altcha.solve(challenge) }
                 attemptInFlight = true
                 resubmit?.invoke()
             }

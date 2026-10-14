@@ -1,6 +1,5 @@
 package com.wajub.mobile.mapper
 
-import com.wajub.mobile.mobilemoney.MobileMoney
 import com.wajub.mobile.model.ActionKind
 import com.wajub.mobile.model.AltchaChallenge
 import com.wajub.mobile.model.Branding
@@ -435,19 +434,17 @@ object PaymentMapper {
         }.toMap()
 
     /**
-     * `data` for a Mobile Money charge: the number in E.164 (`+237677123456`)
-     * when [MobileMoneyInput.country] is a Mobile Money country the SDK knows,
+     * `data` for a Mobile Money charge, as 1.x built it: the number as given,
      * the ISO-2 country, and the operator an aggregate channel was given.
+     * [com.wajub.mobile.mobilemoney.MobileMoneyRules.requestData] builds the
+     * v2 request (E.164, operator hint).
      */
-    fun buildMobileMoneyRequest(input: MobileMoneyInput): Map<String, Any?> {
-        val country = input.country.uppercase()
-        val phone = MobileMoney.data().country(country)?.let { MobileMoney.e164(input.phone, it) } ?: input.phone
-        return buildMap {
-            put("phone", phone)
-            put("country", country)
+    fun buildMobileMoneyRequest(input: MobileMoneyInput): Map<String, Any?> =
+        buildMap {
+            put("phone", input.phone)
+            put("country", input.country.uppercase())
             input.operator?.takeIf { it.isNotBlank() }?.let { put("operator", it) }
         }
-    }
 
     fun mapProcessResponse(body: RawProcessResponse, methodType: String): PaymentResult {
         val txn = body.transaction ?: return PaymentResult.Failed(

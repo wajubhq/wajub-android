@@ -162,6 +162,20 @@ class WatchingContractTest {
         }
         assertEquals("session_terminal_expired", assertIs<WatchEvent.Expired>(decide("error-410-session-terminal-expired").last()).error.code)
         assertEquals("session_not_found", assertIs<WatchEvent.Failed>(decide("error-401-invalid-token").last()).error.code)
+
+        // A 2xx without a status says nothing: no event, never a refusal.
+        for (empty in listOf("{}", """{"transaction":{}}""", """{"transaction":{"status":null}}""")) {
+            val api = FakeApi().on("GET /pay/status", FakeResponse.status(200, empty))
+            val (_, events) = watch(api)
+            advanceTimeBy(20_001)
+            assertTrue(events.isEmpty(), "$empty: $events")
+            assertEquals(5, api.count("GET /pay/status"), "still watching")
+        }
+        val socket = FakeSocket()
+        val (_, socketEvents) = watch(FakeApi().on("GET /pay/status", Fixtures.response("status-processing")), session("session-cm-aggregate"), socket = socket)
+        socket.listener!!.onEvent("""{"status_label":"Failed","uid":"trx_1"}""")
+        runCurrent()
+        assertTrue(socketEvents.none { it.isFinal }, "a frame without a status decides nothing")
     }
 
     @Test

@@ -26,7 +26,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -51,7 +50,6 @@ import com.wajub.mobile.mobilemoney.MobileMoney
 import com.wajub.mobile.model.SessionData
 import com.wajub.mobile.model.StepKind
 import com.wajub.mobile.model.WajubLanguage
-import kotlinx.coroutines.launch
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -244,11 +242,8 @@ private fun CardFields(controller: CheckoutController, screen: SheetScreen.Form,
 private fun StripePay(controller: CheckoutController, screen: SheetScreen.Form, payLabel: String) {
     val flavor = screen.card?.flavor as? CardFlavor.Stripe ?: return
     val context = LocalContext.current
-    val scope = rememberCoroutineScope()
     var widget by remember { mutableStateOf<CardInputWidget?>(null) }
     var complete by remember { mutableStateOf(false) }
-    var tokenizing by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
     AndroidView(
         modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp),
         factory = { ctx ->
@@ -258,31 +253,18 @@ private fun StripePay(controller: CheckoutController, screen: SheetScreen.Form, 
             }
         },
     )
-    error?.let { FieldError(it, tag = "wajub-stripe-error") }
     PrimaryButton(
         payLabel,
         onClick = {
             val card = widget?.paymentMethodCard ?: return@PrimaryButton
-            tokenizing = true
-            error = null
-            scope.launch {
-                try {
-                    val id = StripeTokenizer.createPaymentMethod(
-                        context = context,
-                        publishableKey = flavor.publishableKey,
-                        card = card,
-                        cardholderName = screen.card?.values?.get("card_holder")?.trim()?.ifBlank { null },
-                    )
-                    controller.payStripe(id)
-                } catch (e: Exception) {
-                    error = e.message
-                } finally {
-                    tokenizing = false
-                }
+            val holder = screen.card?.values?.get("card_holder")?.trim()?.ifBlank { null }
+            // The attempt starts here: tokenizing is part of it.
+            controller.payStripe {
+                StripeTokenizer.createPaymentMethod(context, flavor.publishableKey, card, holder)
             }
         },
         enabled = complete,
-        busy = screen.busy || tokenizing,
+        busy = screen.busy,
         tag = "wajub-pay",
     )
 }

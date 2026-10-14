@@ -86,7 +86,7 @@ class PayCardHostedRedirectTest {
         val data = body.getJSONObject("data")
         assertEquals("payer@example.test", data.getString("email"))
         assertEquals("00225", data.getString("zip_code"))
-        assertEquals(setOf("email", "zip_code", "_client"), data.keys().asSequence().toSet())
+        assertEquals(2, data.length())
         assertIs<PaymentResult.RequiresAction>(result)
         assertEquals("https://checkout.cinetpay.com/payment/abc", result.actionUrl)
     }

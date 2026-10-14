@@ -91,6 +91,37 @@ class LifecycleContractTest {
         assertEquals(0, api.count("POST /pay/cancel"))
         val result = assertIs<CheckoutResult.Processing>(recorder.result)
         assertEquals("trx_test_PVrU8x2kQ1mNa7Lb3cDe", result.transaction?.id)
+
+        // A Stripe card is in flight from the press, while Stripe tokenizes it:
+        // a dismiss resolves processing, and no charge leaves after the sheet closed.
+        val stripe = cmApi().on("POST /pay/process", Fixtures.response("process-succeeded-200"))
+        val (card, cardEvents) = checkout(stripe)
+        card.start()
+        runCurrent()
+        card.selectMethod("card")
+        card.payStripe {
+            kotlinx.coroutines.delay(5_000)
+            "pm_card_visa"
+        }
+        runCurrent()
+        assertEquals(CheckoutState.PROCESSING, card.state)
+        card.dismiss()
+        runCurrent()
+        assertIs<CheckoutResult.Processing>(cardEvents.result)
+        advanceTimeBy(10_000)
+        assertEquals(0, stripe.count("POST /pay/cancel"))
+        assertEquals(0, stripe.count("POST /pay/process"), "nothing is sent once the sheet has closed")
+
+        // A tokenizing error shows on the form.
+        val (refused, _) = checkout(cmApi())
+        refused.start()
+        runCurrent()
+        refused.selectMethod("card")
+        refused.payStripe { throw IllegalStateException("Your card number is incorrect.") }
+        runCurrent()
+        val form = assertIs<SheetScreen.Form>(refused.screen.value)
+        assertEquals("Your card number is incorrect.", form.banner)
+        assertEquals(CheckoutState.COLLECTING_DETAILS, refused.state)
     }
 
     @Test

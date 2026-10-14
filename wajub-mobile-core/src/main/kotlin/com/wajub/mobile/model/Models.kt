@@ -236,7 +236,7 @@ data class SdkConfig(
 
 data class MobileMoneyInput(
     val channelSlug: String,
-    /** As typed, or E.164: sent as E.164 when [country] is a known Mobile Money country. */
+    /** Sent as given. */
     val phone: String,
     val country: String,
     /** Aggregate channels only (`cm.mobile`): the operator the payer picked (`mtn`). */
