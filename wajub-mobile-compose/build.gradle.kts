@@ -31,6 +31,11 @@ android {
     buildFeatures {
         compose = true
     }
+
+    testOptions {
+        // Robolectric runs the Compose UI tests on the JVM, with the module's resources.
+        unitTests.isIncludeAndroidResources = true
+    }
 }
 
 dependencies {
@@ -43,6 +48,19 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("com.stripe:stripe-android:21.2.0")
     implementation("androidx.browser:browser:1.8.0")
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
+    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.7")
+    // Operator and merchant logos (SVG and bitmaps).
+    implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation("io.coil-kt:coil-svg:2.7.0")
+
+    testImplementation(kotlin("test"))
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.test:core-ktx:1.6.1")
+    testImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("androidx.compose.ui:ui-test-manifest")
 }
 
 mavenPublishing {

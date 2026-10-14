@@ -1,492 +1,254 @@
 package com.wajub.mobile.ui
 
+import android.app.Activity
 import android.content.Context
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material3.Button
+import android.content.ContextWrapper
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SegmentedButton
-import androidx.compose.material3.SegmentedButtonDefaults
-import androidx.compose.material3.SingleChoiceSegmentedButtonRow
-import androidx.compose.material3.Text
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Modifier
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.LocalLifecycleOwner
-import com.stripe.android.view.CardInputWidget
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.wajub.mobile.WajubMobile
 import com.wajub.mobile.WajubSession
-import com.wajub.mobile.mapper.PaymentMapper
+import com.wajub.mobile.checkout.CheckoutController
+import com.wajub.mobile.checkout.CheckoutResult
+import com.wajub.mobile.checkout.PaymentSuccess
+import com.wajub.mobile.checkout.PresentOptions
+import com.wajub.mobile.checkout.SheetScreen
 import com.wajub.mobile.model.ActionKind
-import com.wajub.mobile.model.MobileMoneyInput
 import com.wajub.mobile.model.PaymentResult
-import com.wajub.mobile.model.SdkConfig
-import com.wajub.mobile.model.SessionChannel
-import com.wajub.mobile.model.SessionData
+import com.wajub.mobile.model.ProcessOutcome
+import com.wajub.mobile.model.ProcessingContext
+import com.wajub.mobile.model.ProcessingKind
 import com.wajub.mobile.model.SessionTransaction
-import com.wajub.mobile.model.WajubError
-import com.wajub.mobile.model.WajubErrorType
+import com.wajub.mobile.model.UNSUPPORTED_ACTION_CODE
 import kotlinx.coroutines.launch
-
-private enum class PaymentTab { MobileMoney, Card }
+import java.util.UUID
 
 /**
- * Native Compose payment sheet — Mobile Money + card, no WebView.
+ * Wajub's native payment sheet — Mobile Money, card and wallets, no WebView.
  *
- * Card tab, by `sdk-config`: `clientSession` (Paystack / Flutterwave — the PSP's
- * hosted checkout in Custom Tabs handles PIN/OTP/AVS, then the payment is verified
- * server-side when the payer comes back — Adyen cards too, via Pay by Link),
- * `hosted_redirect` (PayPal / Mollie / Paddle / Kkiapay / FedaPay / PayDunya /
- * CinetPay page in Custom Tabs, after asking for whatever contact/billing
- * fields `sdk-config` still requires), or `stripe_elements` (Stripe's own card widget).
+ * Show it while you want the sheet up; [onComplete] receives the result
+ * exactly once, when it closes (also when the screen that showed it goes away
+ * for good). The sheet survives configuration changes.
+ *
+ * ```kotlin
+ * if (paying) {
+ *     PaymentSheet(PresentOptions(sessionToken = authorizationToken)) { result ->
+ *         paying = false
+ *         // CheckoutResult.Complete / Processing / Failed / Cancelled
+ *     }
+ * }
+ * ```
  */
-private const val TAB_MOBILE_MONEY = 0
-private const val TAB_CARD = 1
-private const val TAB_WALLET = 2
-private val TAB_LABELS = mapOf(TAB_MOBILE_MONEY to "Mobile Money", TAB_CARD to "Card", TAB_WALLET to "Wallet")
+@Composable
+fun PaymentSheet(options: PresentOptions, onComplete: (CheckoutResult) -> Unit) {
+    SheetHost({ WajubMobile.createSession(options.sessionToken) }, options, onComplete = onComplete)
+}
 
-private val HOSTED_CARD_FIELD_LABELS = mapOf(
-    "first_name" to "First name",
-    "last_name" to "Last name",
-    "email" to "Email",
-    "phone" to "Phone number",
-    "address" to "Address",
-    "city" to "City",
-    "country" to "Country (2-letter code, e.g. CI)",
-    "state" to "State / region",
-    "zip_code" to "Postal code",
+/** The same, on a session you created (`WajubMobile.createSession`); [PresentOptions.sessionToken] is not read. */
+@Composable
+fun PaymentSheet(session: WajubSession, options: PresentOptions = PresentOptions(), onComplete: (CheckoutResult) -> Unit) {
+    SheetHost({ session }, options, onComplete = onComplete)
+}
+
+/**
+ * The 1.x sheet. [onResult] is called as in 1.x: with each answer to a
+ * payment request (`RequiresAction` for a push approval or a provider page,
+ * `Complete`, `Processing`) — and now also when the payment succeeds, or the
+ * sheet closes on a failure; [onDismiss] when the payer closes it otherwise.
+ * Redirects, approvals, confirmation steps and watching happen in the sheet.
+ */
+@Deprecated(
+    "Use PaymentSheet(session, PresentOptions(), onComplete): its CheckoutResult also says why a sheet closed.",
+    ReplaceWith("PaymentSheet(wajubSession, PresentOptions()) { result -> }", "com.wajub.mobile.checkout.PresentOptions"),
 )
-
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun PaymentSheet(
     wajubSession: WajubSession,
     onDismiss: () -> Unit,
     onResult: (PaymentResult) -> Unit,
 ) {
-    val context = LocalContext.current
-    val scope = rememberCoroutineScope()
-    var session by remember { mutableStateOf<SessionData?>(null) }
-    var sdkConfig by remember { mutableStateOf<SdkConfig?>(null) }
-    var loading by remember { mutableStateOf(true) }
-    var submitting by remember { mutableStateOf(false) }
-    // Whether the payer submitted anything: closing the sheet before that
-    // cancels the payment on Wajub too.
-    var submitted by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<WajubError?>(null) }
-    var tab by remember { mutableIntStateOf(0) }
-    var selectedChannel by remember { mutableStateOf<SessionChannel?>(null) }
-    var phone by remember { mutableStateOf("") }
-    var country by remember { mutableStateOf("CM") }
-    var holder by remember { mutableStateOf("") }
-    // Raw PAN/expiry/CVC are never held in app-owned Compose state — Stripe's own
-    // CardInputWidget owns that data and produces tokenization params directly.
-    var cardInputWidget by remember { mutableStateOf<CardInputWidget?>(null) }
-    var cardComplete by remember { mutableStateOf(false) }
-    var email by remember { mutableStateOf("") }
-    var billing by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
-    // Client session opened in Custom Tabs, completed once the payer is back.
-    var awaitingClientSessionId by remember { mutableStateOf<String?>(null) }
-    var awaitingTransaction by remember { mutableStateOf<SessionTransaction?>(null) }
-    var leftForPsp by remember { mutableStateOf(false) }
+    // As in 1.x, the success screen stays until the app hides the sheet.
+    SheetHost({ wajubSession }, LEGACY_OPTIONS, LegacyCallbacks(onResult, onDismiss)) { }
+}
 
-    LaunchedEffect(wajubSession) {
-        try {
-            val loaded = wajubSession.loadSession()
-            val cfg = wajubSession.getSdkConfig()
-            val momo = loaded.channels.filter {
-                it.type.equals("mobile_money", true) || it.type.equals("mobile", true)
+private val LEGACY_OPTIONS = PresentOptions(autoCloseSuccess = 0)
+
+/** The 1.x sheet's callbacks, kept current across recompositions by the view model. */
+internal class LegacyCallbacks(val onResult: (PaymentResult) -> Unit, val onDismiss: () -> Unit)
+
+private fun paidTransaction(payment: PaymentSuccess) =
+    SessionTransaction(
+        id = payment.id,
+        reference = payment.reference.orEmpty(),
+        amount = payment.amount,
+        amountTotal = payment.amount,
+        currency = payment.currency,
+        status = "succeeded",
+        receiptUrl = payment.receiptUrl,
+    )
+
+// What 1.x's onResult received for an answer; null for what 1.x never reported
+// (refusals were shown in the form; confirmation steps are handled now).
+private fun legacyResult(outcome: ProcessOutcome): PaymentResult? =
+    when (outcome) {
+        is ProcessOutcome.Complete -> PaymentResult.Complete(outcome.transaction)
+        is ProcessOutcome.Processing -> outcome.transaction?.let { txn ->
+            if (outcome.kind == ProcessingKind.Pending) {
+                PaymentResult.Processing(txn, outcome.instruction)
+            } else {
+                PaymentResult.RequiresAction(
+                    ActionKind.PushApproval,
+                    null,
+                    txn.copy(processingContext = ProcessingContext(payerInstruction = outcome.instruction)),
+                )
             }
-            session = loaded
-            sdkConfig = cfg
-            selectedChannel = momo.firstOrNull()
-            country = momo.firstOrNull()?.countries?.firstOrNull() ?: "CM"
-            val hasCardChannel = loaded.channels.any { it.type.equals("card", true) }
-            val hasWallet = loaded.channels.any { PaymentMapper.isRedirectWalletChannel(it, cfg.channels[it.slug]) }
-            tab = when {
-                momo.isNotEmpty() -> TAB_MOBILE_MONEY
-                hasCardChannel -> TAB_CARD
-                hasWallet -> TAB_WALLET
-                else -> TAB_MOBILE_MONEY
+        }
+        is ProcessOutcome.RequiresAction -> outcome.transaction?.let { txn ->
+            when {
+                outcome.action == "client_session" && outcome.clientSession != null ->
+                    PaymentResult.RequiresAction(ActionKind.ClientSession, outcome.url, txn, outcome.clientSession)
+                outcome.url == null -> null
+                outcome.action == "redirect" -> PaymentResult.RequiresAction(ActionKind.Redirect, outcome.url, txn)
+                outcome.action == "confirm" -> PaymentResult.RequiresAction(ActionKind.Confirm, outcome.url, txn)
+                outcome.action == "confirm_3ds" -> PaymentResult.RequiresAction(ActionKind.Confirm3ds, outcome.url, txn)
+                else -> null
             }
-            loading = false
-        } catch (e: WajubError) {
-            loading = false
-            error = e
-        } catch (e: Exception) {
-            loading = false
-            error = WajubError.network(e.message ?: "Error")
+        }
+        is ProcessOutcome.Failed ->
+            if (outcome.error.code == UNSUPPORTED_ACTION_CODE) PaymentResult.Failed(outcome.error, outcome.transaction) else null
+    }
+
+/** Keeps the sheet's engine across configuration changes; a host gone for good settles it. */
+internal class CheckoutViewModel : ViewModel() {
+    private var controller: CheckoutController? = null
+    var onComplete: ((CheckoutResult) -> Unit)? = null
+    var legacy: LegacyCallbacks? = null
+    private var completeReported = false
+
+    fun controllerFor(session: () -> WajubSession, options: PresentOptions): CheckoutController =
+        controller ?: CheckoutController(session(), options, viewModelScope).also { created ->
+            created.onFinished = { result ->
+                legacy?.let { closed(it, result) }
+                onComplete?.invoke(result)
+            }
+            if (legacy != null) {
+                created.onAnswer = { outcome -> legacyResult(outcome)?.let(::report) }
+                viewModelScope.launch {
+                    created.screen.collect { screen ->
+                        if (screen is SheetScreen.Success && !completeReported) {
+                            report(PaymentResult.Complete(created.transaction ?: paidTransaction(screen.payment)))
+                        }
+                    }
+                }
+            }
+            controller = created
+            created.start()
+        }
+
+    private fun report(result: PaymentResult) {
+        if (result is PaymentResult.Complete) completeReported = true
+        legacy?.onResult?.invoke(result)
+    }
+
+    private fun closed(callbacks: LegacyCallbacks, result: CheckoutResult) {
+        when (result) {
+            is CheckoutResult.Complete -> if (!completeReported) report(PaymentResult.Complete(result.transaction ?: paidTransaction(result.payment)))
+            is CheckoutResult.Failed -> report(PaymentResult.Failed(result.error, result.transaction))
+            is CheckoutResult.Processing, is CheckoutResult.Cancelled -> callbacks.onDismiss()
         }
     }
 
-    fun finish(result: PaymentResult) {
-        PaymentActionHandler.handle(context, result)
-        onResult(result)
+    override fun onCleared() {
+        controller?.hostGone()
     }
+}
 
-    // An observer added while the activity is already resumed immediately receives
-    // ON_RESUME — only complete after an ON_PAUSE/ON_STOP (the Custom Tab opening)
-    // has been seen, i.e. when the payer genuinely comes back from the PSP.
-    val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SheetHost(
+    session: () -> WajubSession,
+    options: PresentOptions,
+    legacy: LegacyCallbacks? = null,
+    onComplete: (CheckoutResult) -> Unit,
+) {
+    val context = LocalContext.current
+    // One presentation: kept across configuration changes, new each time the sheet is shown.
+    val presentation = rememberSaveable { UUID.randomUUID().toString() }
+    val model: CheckoutViewModel = viewModel(key = "wajub-checkout-$presentation")
+    val latest by rememberUpdatedState(onComplete)
+    SideEffect {
+        model.onComplete = { latest(it) }
+        model.legacy = legacy
+    }
+    if (model.legacy == null) model.legacy = legacy
+    val controller = remember(model) {
+        // The device's details before the first request (the init provider may be disabled).
+        WajubAndroid.install(context)
+        model.controllerFor(session, options)
+    }
+    SideEffect { controller.urlOpener = { url -> HostedRedirectLauncher.open(context, url) } }
+
+    // Back from a provider's page (browser closed, app foregrounded): read the status at once.
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    DisposableEffect(lifecycle, controller) {
+        var away = false
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_PAUSE, Lifecycle.Event.ON_STOP ->
-                    if (awaitingClientSessionId != null) leftForPsp = true
-                Lifecycle.Event.ON_RESUME -> {
-                    val id = awaitingClientSessionId
-                    val transaction = awaitingTransaction
-                    if (id != null && transaction != null && leftForPsp) {
-                        awaitingClientSessionId = null
-                        awaitingTransaction = null
-                        leftForPsp = false
-                        scope.launch {
-                            // The payer already went through the PSP's page: end the
-                            // sheet rather than offer a new attempt. Only a 402 is a
-                            // verified decline; anything else (network, expired
-                            // session) may still be settled by the PSP webhook →
-                            // Processing, the app keeps watching the status.
-                            val result = try {
-                                wajubSession.completeClientSession(id)
-                            } catch (e: WajubError) {
-                                if (e.declineCode != null) {
-                                    PaymentResult.Failed(e, transaction)
-                                } else {
-                                    PaymentResult.Processing(transaction)
-                                }
-                            } catch (e: Exception) {
-                                PaymentResult.Processing(transaction)
-                            }
-                            submitting = false
-                            finish(result)
-                        }
-                    }
+                Lifecycle.Event.ON_PAUSE -> away = true
+                Lifecycle.Event.ON_RESUME -> if (away) {
+                    away = false
+                    controller.onReturn()
                 }
                 else -> Unit
             }
         }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+        lifecycle.addObserver(observer)
+        onDispose { lifecycle.removeObserver(observer) }
     }
-
-    val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
-
-    ModalBottomSheet(
-        onDismissRequest = {
-            wajubSession.cancelIfNothingSubmitted(submitted)
-            onDismiss()
-        },
-        sheetState = sheetState,
-    ) {
-        Column(
-            Modifier
-                .fillMaxWidth()
-                .padding(24.dp),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            Text("Pay with Wajub", style = MaterialTheme.typography.titleLarge)
-
-            val momoChannels = session?.channels?.filter {
-                it.type.equals("mobile_money", true) || it.type.equals("mobile", true)
-            }.orEmpty()
-            val hasCard = session?.channels?.any { it.type.equals("card", true) } == true
-            val walletChannels = session?.channels?.filter {
-                PaymentMapper.isRedirectWalletChannel(it, sdkConfig?.channels?.get(it.slug))
-            }.orEmpty()
-            val tabs = buildList {
-                if (momoChannels.isNotEmpty()) add(TAB_MOBILE_MONEY)
-                if (hasCard) add(TAB_CARD)
-                if (walletChannels.isNotEmpty()) add(TAB_WALLET)
-            }
-
-            if (tabs.size > 1) {
-                SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-                    tabs.forEachIndexed { index, value ->
-                        SegmentedButton(
-                            selected = tab == value,
-                            onClick = { tab = value },
-                            shape = SegmentedButtonDefaults.itemShape(index = index, count = tabs.size),
-                        ) { Text(TAB_LABELS.getValue(value)) }
-                    }
-                }
-            }
-
-            when {
-                loading -> Text("Loading…")
-                error != null -> Text(error!!.message, color = MaterialTheme.colorScheme.error)
-                tab == TAB_WALLET -> {
-                    Text("You will approve the payment in the wallet app.")
-                    walletChannels.forEach { ch ->
-                        Button(
-                            onClick = {
-                                scope.launch {
-                                    submitting = true
-                                    submitted = true
-                                    error = null
-                                    try {
-                                        val result = wajubSession.payWallet(ch.slug)
-                                        submitting = false
-                                        finish(result)
-                                    } catch (e: WajubError) {
-                                        submitting = false
-                                        error = e
-                                    } catch (e: Exception) {
-                                        submitting = false
-                                        error = WajubError.network(e.message ?: "Payment error")
-                                    }
-                                }
-                            },
-                            enabled = !submitting,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text(if (submitting) "Processing…" else "Pay with ${ch.name}")
-                        }
-                    }
-                }
-                tab == TAB_MOBILE_MONEY -> {
-                    if (momoChannels.isEmpty()) {
-                        Text("No Mobile Money channels available.")
-                    } else {
-                        LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            items(momoChannels) { ch ->
-                                FilterChip(
-                                    selected = selectedChannel?.slug == ch.slug,
-                                    onClick = { selectedChannel = ch },
-                                    label = { Text(ch.name) },
-                                )
-                            }
-                        }
-                        OutlinedTextField(
-                            value = phone,
-                            onValueChange = { phone = it },
-                            label = { Text("Phone number") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                        )
-                        Button(
-                            onClick = {
-                                val ch = selectedChannel ?: return@Button
-                                scope.launch {
-                                    submitting = true
-                                    submitted = true
-                                    error = null
-                                    try {
-                                        val result = wajubSession.payMobileMoney(
-                                            MobileMoneyInput(ch.slug, phone.trim(), country),
-                                        )
-                                        submitting = false
-                                        finish(result)
-                                    } catch (e: WajubError) {
-                                        submitting = false
-                                        error = e
-                                    }
-                                }
-                            },
-                            enabled = !submitting && phone.isNotBlank() && selectedChannel != null,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text(if (submitting) "Processing…" else "Pay now")
-                        }
-                    }
-                }
-                !hasCard -> Text("No card channel available.")
-                else -> {
-                    val cardSlug = wajubSession.cardChannelSlug() ?: "card"
-                    val cardCfg = sdkConfig?.channels?.get(cardSlug)
-                    if (cardCfg?.clientSession == true) {
-                        OutlinedTextField(
-                            value = email,
-                            onValueChange = { email = it },
-                            label = { Text("Email (optional)") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
-                        )
-                        Button(
-                            onClick = {
-                                scope.launch {
-                                    submitting = true
-                                    submitted = true
-                                    error = null
-                                    try {
-                                        val result = wajubSession.startClientSession(
-                                            channel = cardSlug,
-                                            email = email.trim().ifBlank { null },
-                                        )
-                                        val clientSession = (result as? PaymentResult.RequiresAction)?.clientSession
-                                        val hostedUrl = clientSession?.hostedUrl
-                                        if (clientSession == null || hostedUrl == null) {
-                                            submitting = false
-                                            finish(result)
-                                            return@launch
-                                        }
-                                        awaitingClientSessionId = clientSession.id
-                                        awaitingTransaction = (result as PaymentResult.RequiresAction).transaction
-                                        leftForPsp = false
-                                        if (!HostedRedirectLauncher.open(context, hostedUrl)) {
-                                            awaitingClientSessionId = null
-                                            awaitingTransaction = null
-                                            submitting = false
-                                            error = WajubError(
-                                                WajubErrorType.PaymentError,
-                                                "Could not open the payment page",
-                                                "redirect_failed",
-                                            )
-                                        }
-                                    } catch (e: WajubError) {
-                                        submitting = false
-                                        error = e
-                                    } catch (e: Exception) {
-                                        submitting = false
-                                        error = WajubError.network(e.message ?: "Card error")
-                                    }
-                                }
-                            },
-                            enabled = !submitting,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text(if (submitting) "Processing…" else "Pay by card")
-                        }
-                    } else if (cardCfg?.sdk == "hosted_redirect") {
-                        val redirectFields = cardCfg.requiredFields.filter { it in PaymentMapper.hostedCardFields }
-                        val redirectFieldsValid = redirectFields.all { PaymentMapper.hostedCardFieldError(it, billing[it]) == null }
-                        redirectFields.forEach { field ->
-                            OutlinedTextField(
-                                value = billing[field].orEmpty(),
-                                onValueChange = { value ->
-                                    billing = billing + (field to if (field == "country") value.take(2) else value)
-                                },
-                                label = { Text(HOSTED_CARD_FIELD_LABELS[field] ?: field) },
-                                modifier = Modifier.fillMaxWidth(),
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(
-                                    keyboardType = when (field) {
-                                        "email" -> KeyboardType.Email
-                                        "phone" -> KeyboardType.Phone
-                                        else -> KeyboardType.Text
-                                    },
-                                ),
-                            )
-                        }
-                        Button(
-                            onClick = {
-                                scope.launch {
-                                    submitting = true
-                                    submitted = true
-                                    error = null
-                                    try {
-                                        val result = wajubSession.payCardHostedRedirect(cardSlug, billing)
-                                        submitting = false
-                                        finish(result)
-                                    } catch (e: WajubError) {
-                                        submitting = false
-                                        error = e
-                                    } catch (e: Exception) {
-                                        submitting = false
-                                        error = WajubError.network(e.message ?: "Card error")
-                                    }
-                                }
-                            },
-                            enabled = !submitting && redirectFieldsValid,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text(if (submitting) "Processing…" else "Pay by card")
-                        }
-                    } else {
-                        OutlinedTextField(
-                            value = holder,
-                            onValueChange = { holder = it },
-                            label = { Text("Cardholder name") },
-                            modifier = Modifier.fillMaxWidth(),
-                            singleLine = true,
-                        )
-                        // Stripe's own secure widget: card number, expiry and CVC are entered and
-                        // validated inside CardInputWidget's protected fields, and it produces
-                        // PaymentMethodCreateParams.Card directly — raw PAN/CVC strings never flow
-                        // into this Composable's own state.
-                        AndroidView(
-                            modifier = Modifier.fillMaxWidth(),
-                            factory = { ctx ->
-                                CardInputWidget(ctx).apply {
-                                    setCardValidCallback { isValid, _ -> cardComplete = isValid }
-                                    cardInputWidget = this
-                                }
-                            },
-                        )
-                        Button(
-                            onClick = {
-                                if (cardCfg?.sdk != "stripe_elements" || cardCfg.publishableKey.isNullOrBlank()) {
-                                    error = WajubError(
-                                        com.wajub.mobile.model.WajubErrorType.PaymentError,
-                                        "Card payments unavailable",
-                                        "provider_unavailable",
-                                    )
-                                    return@Button
-                                }
-                                val card = cardInputWidget?.paymentMethodCard
-                                if (card == null) {
-                                    error = WajubError(
-                                        com.wajub.mobile.model.WajubErrorType.PaymentError,
-                                        "Enter a valid card",
-                                        "invalid_card",
-                                    )
-                                    return@Button
-                                }
-                                scope.launch {
-                                    submitting = true
-                                    submitted = true
-                                    error = null
-                                    try {
-                                        val pmId = StripeTokenizer.createPaymentMethod(
-                                            context = context,
-                                            publishableKey = cardCfg.publishableKey!!,
-                                            card = card,
-                                            cardholderName = holder.trim().ifBlank { null },
-                                        )
-                                        val result = wajubSession.payCard(cardSlug, pmId, holder.trim().ifBlank { null })
-                                        submitting = false
-                                        finish(result)
-                                    } catch (e: WajubError) {
-                                        submitting = false
-                                        error = e
-                                    } catch (e: Exception) {
-                                        submitting = false
-                                        error = WajubError.network(e.message ?: "Card error")
-                                    }
-                                }
-                            },
-                            enabled = !submitting && cardComplete,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) {
-                            Text(if (submitting) "Processing…" else "Pay with card")
-                        }
-                    }
-                }
-            }
+    // Left composition for good (not for a configuration change): the host went away.
+    DisposableEffect(controller) {
+        onDispose {
+            if (context.findActivity()?.isChangingConfigurations != true) controller.hostGone()
         }
     }
+
+    // Dismissed or done: the sheet hides at once, even while a cancel settles the result.
+    val closing by controller.closing.collectAsState()
+    if (closing) return
+    val data by controller.sessionData.collectAsState()
+    val look = rememberSheetLook(options.appearance, data?.brand)
+    ModalBottomSheet(
+        onDismissRequest = controller::dismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = look.colors.background.color(),
+        tonalElevation = look.elevation.dp,
+        scrimColor = look.scrimAlpha?.let { Color.Black.copy(alpha = it) } ?: BottomSheetDefaults.ScrimColor,
+    ) {
+        PaymentSheetContent(controller)
+    }
 }
+
+private tailrec fun Context.findActivity(): Activity? =
+    when (this) {
+        is Activity -> this
+        is ContextWrapper -> baseContext.findActivity()
+        else -> null
+    }

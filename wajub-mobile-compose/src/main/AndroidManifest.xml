@@ -1,2 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" />
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!-- Tells wajub-mobile-core about the device (headers, install fingerprint) at app start. -->
+        <provider
+            android:name="com.wajub.mobile.ui.WajubInitProvider"
+            android:authorities="${applicationId}.wajub-init"
+            android:exported="false" />
+    </application>
+
+    <!-- Custom Tabs: the browsers that can open a provider's page. -->
+    <queries>
+        <intent>
+            <action android:name="android.support.customtabs.action.CustomTabsService" />
+        </intent>
+    </queries>
+</manifest>
