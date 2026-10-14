@@ -44,6 +44,12 @@ sealed class ProcessOutcome {
         /** English, from `processing_context.payer_instruction`. */
         val instruction: String? = null,
         val kind: ProcessingKind = ProcessingKind.Pending,
+        /**
+         * When no answer came back at all: the clock time (ms) the last try was
+         * sent. A status still `pending` 60 s later means the request most
+         * likely never arrived: pay again with the same Idempotency-Key.
+         */
+        val unansweredSince: Long? = null,
     ) : ProcessOutcome()
 
     /** The payer has something to do: a page to open, or a confirmation step. */

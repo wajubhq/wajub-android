@@ -197,7 +197,7 @@ class MobileMoneyContractTest {
         liveController.payMobileMoney()
         val form = assertIs<SheetScreen.Form>(liveController.screen.value).mobileMoney!!
         assertEquals(
-            "This is a MTN MoMo number. Pick MTN MoMo in the list, or enter a Orange Money number.",
+            "This number belongs to MTN MoMo. Pick MTN MoMo in the list, or enter a Orange Money number.",
             form.phoneError,
         )
         assertEquals(0, live.count("POST /pay/process"))

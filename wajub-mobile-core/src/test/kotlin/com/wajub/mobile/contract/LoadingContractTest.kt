@@ -34,6 +34,24 @@ class LoadingContractTest {
         assertEquals("mobile_money", form.method.family)
         assertEquals(listOf("mtn", "orange"), form.mobileMoney!!.choices.map { it.id })
         assertEquals(listOf("ready", "state:COLLECTING_DETAILS"), recorder.events)
+
+        // Only a card, and no sdk-config: not "no payment method" for good, a load_error to retry.
+        val cardOnly = FakeApi()
+            .on("GET /pay/session", Fixtures.response("session-cm-aggregate") { body ->
+                body.put("channels", org.json.JSONArray().put(body.getJSONArray("channels").getJSONObject(0)))
+            })
+            .on("GET /pay/sdk-config", FakeResponse.status(503), FakeResponse.status(503), FakeResponse.status(503), FakeResponse.status(503), Fixtures.response("sdk-config-cm-stripe"))
+        val (retry, retryEvents) = checkout(cardOnly)
+        retry.start()
+        advanceTimeBy(14_000)
+        runCurrent()
+        val error = assertIs<SheetScreen.LoadError>(retry.screen.value).error
+        assertEquals("load_error", error.code)
+        assertTrue(error.retryable)
+        assertEquals(listOf("loadError:load_error"), retryEvents.events)
+        retry.retryLoad()
+        runCurrent()
+        assertEquals("card", assertIs<SheetScreen.Form>(retry.screen.value).method.id)
     }
 
     @Test

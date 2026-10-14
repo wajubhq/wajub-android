@@ -85,7 +85,7 @@ object ErrorCatalog {
         "invalid_phone" to Entry(invalid, true, "Invalid phone number", "Numéro de téléphone invalide"),
         "operator_mismatch" to Entry(
             invalid, true,
-            "This is a {detected} number. Pick {detected} in the list, or enter a {selected} number.",
+            "This number belongs to {detected}. Pick {detected} in the list, or enter a {selected} number.",
             "Ce numéro est un numéro {detected}. Choisissez {detected} dans la liste, ou saisissez un numéro {selected}.",
         ),
         "operator_required" to Entry(invalid, true, "Choose your Mobile Money operator.", "Choisissez votre opérateur Mobile Money."),

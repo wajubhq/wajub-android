@@ -78,7 +78,7 @@ internal fun TestScope.checkout(
     ActiveSheet.clear()
     api.clock = { testScheduler.currentTime }
     val controller = CheckoutController(
-        session = fakeSession(api),
+        session = fakeSession(api, clock = { testScheduler.currentTime }),
         options = options.copy(callbacks = recorder.callbacks()),
         scope = backgroundScope,
         clock = { testScheduler.currentTime },

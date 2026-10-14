@@ -35,7 +35,10 @@ internal class HttpResponse(
 }
 
 /** Thrown when no answer came back: [timedOut] for a timeout, else a network failure. */
-internal class TransportException(val timedOut: Boolean, cause: Throwable?) : IOException(cause?.message, cause)
+internal class TransportException(val timedOut: Boolean, cause: Throwable?) : IOException(cause?.message, cause) {
+    /** Clock time the last try was sent (set once the retries are exhausted). */
+    var sentAt: Long = 0L
+}
 
 internal interface Transport {
     suspend fun execute(request: HttpRequest): HttpResponse

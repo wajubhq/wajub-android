@@ -125,5 +125,5 @@ fun testDevice(installIds: InstallIdStore = MemoryInstallIds("5f0c2b1e-8d4a-4c3b
 )
 
 /** A session over the fake API; retries wait in virtual time. */
-internal fun fakeSession(api: FakeApi, device: DeviceEnvironment = testDevice()): WajubSession =
-    WajubSession("test_tok", PayClient(api, environment = { device }, pause = { delay(it) }, random = Random(7)))
+internal fun fakeSession(api: FakeApi, device: DeviceEnvironment = testDevice(), clock: () -> Long = System::currentTimeMillis): WajubSession =
+    WajubSession("test_tok", PayClient(api, environment = { device }, pause = { delay(it) }, random = Random(7), clock = clock))

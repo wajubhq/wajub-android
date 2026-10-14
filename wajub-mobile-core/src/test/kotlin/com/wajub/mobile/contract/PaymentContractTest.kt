@@ -298,7 +298,7 @@ class PaymentContractTest {
     fun `PA-06 maps validation errors to fields`() = runTest {
         val cases = mapOf(
             "process-422-validation" to "Invalid phone number",
-            "process-422-operator-mismatch" to "This is a Orange Money number. Pick Orange Money in the list, or enter a MTN MoMo number.",
+            "process-422-operator-mismatch" to "This number belongs to Orange Money. Pick Orange Money in the list, or enter a MTN MoMo number.",
             "process-422-sandbox-invalid-test-number" to "Invalid phone number",
         )
         for ((fixture, message) in cases) {
@@ -378,10 +378,21 @@ class PaymentContractTest {
         runCurrent()
         assertEquals(CheckoutState.SUCCESS, controller.state, "400: the status says it is paid")
 
-        val stillPending = cmApi()
+        // Still processing: money may move, the sheet waits for the outcome.
+        val running = cmApi()
             .on("POST /pay/process", Fixtures.response("process-400-not-processable"))
             .on("GET /pay/status", Fixtures.response("status-processing"))
-        val other = momoCheckout(stillPending)
+        val waiting = momoCheckout(running)
+        waiting.payMobileMoney()
+        runCurrent()
+        assertEquals(CheckoutState.PENDING, waiting.state)
+        assertTrue(running.count("GET /pay/status") >= 2, "the re-read, then the watch")
+
+        // Neither paid nor under way: not_processable.
+        val stuck = cmApi()
+            .on("POST /pay/process", Fixtures.response("process-400-not-processable"))
+            .on("GET /pay/status", FakeResponse.status(200, """{"transaction":{"status":"pending"}}"""))
+        val other = momoCheckout(stuck)
         other.payMobileMoney()
         runCurrent()
         assertEquals("not_processable", assertIs<SheetScreen.Failed>(other.screen.value).error.code)

@@ -81,9 +81,10 @@ class WajubError(
             WajubError(WajubErrorType.ApiError, message, "network_error", retryable = true)
 
         /**
-         * Builds the error of an HTTP answer (errors.md §2) from its status and
-         * code, without a body. [message] is kept as the API's message; the
-         * payer-facing one comes from the catalogue when [code] is in it.
+         * The 1.x mapping of an HTTP error, kept as it was for the 1.x
+         * methods: [message] is the API's, 401/404/410 are authentication
+         * errors, and only 401/403/404/410 are final. The v2 calls use
+         * [fromResponse].
          */
         fun fromHttp(
             httpStatus: Int,
@@ -93,14 +94,48 @@ class WajubError(
             correlationId: String? = null,
             retryAfterSeconds: Int? = null,
         ): WajubError {
-            val body = JSONObject().put("message", message).put("error_code", code)
-            if (details.isNotEmpty()) {
-                val errors = JSONObject()
-                details.forEach { (k, v) -> errors.put(k, org.json.JSONArray().put(v)) }
-                body.put("errors", errors)
+            val type = when {
+                httpStatus == 401 || httpStatus == 404 || httpStatus == 410 -> WajubErrorType.AuthenticationError
+                httpStatus == 422 -> WajubErrorType.InvalidRequestError
+                httpStatus == 429 -> WajubErrorType.RateLimitError
+                httpStatus >= 500 -> WajubErrorType.ApiError
+                else -> WajubErrorType.PaymentError
             }
-            if (retryAfterSeconds != null) body.put("retry_after", retryAfterSeconds)
-            return fromResponse(httpStatus, body, correlationId, null, WajubLanguage.device(), loading = false)
+            return WajubError(
+                type = type,
+                message = message,
+                code = code,
+                declineCode = if (httpStatus == 402) code else null,
+                retryable = httpStatus !in setOf(401, 403, 404, 410),
+                param = details.keys.singleOrNull(),
+                correlationId = correlationId,
+                retryAfterSeconds = retryAfterSeconds,
+                details = details,
+                httpStatus = httpStatus,
+                apiMessage = message,
+            )
+        }
+
+        /** The 1.x error of an HTTP answer: its code, else one picked by status. */
+        internal fun legacy(httpStatus: Int, body: JSONObject, correlationId: String?, retryAfterHeader: String?): WajubError {
+            val code = body.str("error_code") ?: when {
+                httpStatus == 402 -> "insufficient_funds"
+                httpStatus == 403 -> "blocked"
+                httpStatus == 410 -> "session_terminal_expired"
+                httpStatus == 422 -> "validation_error"
+                httpStatus == 429 -> "rate_limited"
+                httpStatus == 401 || httpStatus == 404 -> "session_not_found"
+                httpStatus >= 500 -> "server_error"
+                else -> "payment_error"
+            }
+            return fromHttp(
+                httpStatus,
+                body.str("message") ?: "Request failed ($httpStatus)",
+                code,
+                body.firstMessages("errors"),
+                correlationId,
+                retryAfterHeader?.trim()?.toIntOrNull(),
+            )
         }
 
         /** errors.md §2: an HTTP answer ≥ 400 as a [WajubError] in [language]. */
@@ -214,10 +249,8 @@ class WajubError(
 
         // errors.md §2 step 4, for a code the catalogue does not know.
         private fun fallbackMessage(status: Int, language: WajubLanguage, apiText: String?): String {
-            if (status == 402) {
-                // A provider's own decline code (`failed`, `stolen_card`…).
-                return if (language == WajubLanguage.En && apiText != null) apiText else ErrorCatalog.genericDecline(language)
-            }
+            // A provider's own decline code (`failed`, `stolen_card`…), in both languages.
+            if (status == 402) return ErrorCatalog.genericDecline(language)
             if (language == WajubLanguage.En && apiText != null) return apiText
             val code = when (status) {
                 422 -> "validation_error"

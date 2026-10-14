@@ -26,8 +26,6 @@ import com.wajub.mobile.realtime.PusherConnector
 import com.wajub.mobile.realtime.RealtimeConnector
 import com.wajub.mobile.realtime.RealtimeEndpoint
 import com.wajub.mobile.realtime.RealtimeOptions
-import com.wajub.mobile.realtime.RealtimeSubscriber
-import com.wajub.mobile.realtime.StatusPoller
 import com.wajub.mobile.realtime.WATCH_CAP_MS
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -64,6 +62,12 @@ class WajubSession internal constructor(
         return session
     }
 
+    // The session for the v2 calls: cached, else loaded with the spec's load errors.
+    internal suspend fun session(forceRefresh: Boolean = false): SessionData {
+        if (!forceRefresh) cachedSession?.let { return it }
+        return client.fetchSession(token).also { cachedSession = it }
+    }
+
     /** Per-channel PSP tokenizer configuration. */
     suspend fun getSdkConfig(): SdkConfig = client.getSdkConfig(token)
 
@@ -77,14 +81,14 @@ class WajubSession internal constructor(
      * outcome: [ProcessOutcome.Processing] without a transaction — watch the status.
      */
     suspend fun process(request: ProcessRequest): ProcessOutcome {
-        val session = loadSession()
+        val session = session()
         val channel = session.channels.firstOrNull { it.slug == request.channel }
         val mobileMoney = channel?.type?.lowercase() in setOf("mobile_money", "mobile")
         val payload = client.processPayload(request.channel, request.data)
         val response = try {
             client.sendRaw(token, ApiCall.Process, payload, request.idempotencyKey)
-        } catch (_: TransportException) {
-            return ProcessOutcome.Processing(transaction = null)
+        } catch (failure: TransportException) {
+            return ProcessOutcome.Processing(transaction = null, unansweredSince = failure.sentAt)
         }
         if (response.status >= 500) return ProcessOutcome.Processing(transaction = null)
         return OutcomeMapper.process(response, mobileMoney, language) { client.errorOf(it, loading = false) }
@@ -165,7 +169,7 @@ class WajubSession internal constructor(
      * under way, so a `pending` status means it ended without charging.
      */
     suspend fun watch(realtime: RealtimeOptions? = null, seenProcessing: Boolean = true): PaymentWatcher =
-        watcher(loadSession(), realtime, seenProcessing)
+        watcher(session(), realtime, seenProcessing)
 
     internal fun watcher(
         session: SessionData,
@@ -323,14 +327,14 @@ class WajubSession internal constructor(
     @Suppress("DEPRECATION")
     suspend fun watchStatus(intervalMs: Long = 5_000L): Flow<PaymentResult> {
         val session = loadSession()
-        return RealtimeSubscriber(client, token, session, intervalMs).subscribe()
+        return com.wajub.mobile.realtime.RealtimeSubscriber(client, token, session, intervalMs).subscribe()
     }
 
     /** Legacy polling-only API. */
     @Deprecated("Use watch(RealtimeOptions(enabled = false)).")
     @Suppress("DEPRECATION")
     fun watchStatusPolling(intervalMs: Long = 5_000L): Flow<PaymentResult> =
-        StatusPoller(client, token, intervalMs).poll()
+        com.wajub.mobile.realtime.StatusPoller(client, token, intervalMs).poll()
 
     fun cardChannelSlug(): String? =
         cachedSession?.channels?.firstOrNull { it.type.equals("card", ignoreCase = true) }?.slug

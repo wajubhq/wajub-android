@@ -2,6 +2,7 @@ package com.wajub.mobile.realtime
 
 import com.wajub.mobile.API_URL
 import com.wajub.mobile.client.PayClient
+import com.wajub.mobile.mapper.PaymentMapper
 import com.wajub.mobile.model.PaymentResult
 import com.wajub.mobile.model.SessionData
 import com.wajub.mobile.model.SessionTransaction
@@ -45,15 +46,23 @@ class RealtimeSubscriber(
     }
 }
 
-/** The 1.x view of a watch: one [PaymentResult] per change, the last one final. */
+/**
+ * The 1.x view of a watch: one [PaymentResult] per change, the last one final.
+ * A `failed`, `cancelled` or `expired` status gives the 1.x error (its code is
+ * the status); the endings 1.x never reached (an attempt that ended without
+ * charging, a session gone) give the v2 error.
+ */
 internal fun Flow<WatchEvent>.toPaymentResults(transaction: SessionTransaction): Flow<PaymentResult> =
     mapNotNull { event ->
+        fun status(value: String) = PaymentMapper.mapStatusToResult(value, transaction.copy(status = value))
         when (event) {
             is WatchEvent.StatusChanged -> PaymentResult.Processing(transaction.copy(status = event.status.status))
             is WatchEvent.Succeeded -> PaymentResult.Complete(transaction.copy(status = event.status.status))
-            is WatchEvent.Failed -> PaymentResult.Failed(event.error, transaction.copy(status = event.status?.status ?: "failed"))
-            is WatchEvent.Cancelled -> PaymentResult.Failed(event.error, transaction.copy(status = "cancelled"))
-            is WatchEvent.Expired -> PaymentResult.Failed(event.error, transaction.copy(status = "expired"))
+            is WatchEvent.Failed ->
+                if (event.status?.status == "failed") status("failed") else PaymentResult.Failed(event.error, transaction)
+            is WatchEvent.Cancelled -> status("cancelled")
+            is WatchEvent.Expired ->
+                if (event.error.code == "session_expired") status("expired") else PaymentResult.Failed(event.error, transaction)
             WatchEvent.StillProcessing -> null
         }
     }.distinctUntilChanged { old, new -> old::class == new::class }

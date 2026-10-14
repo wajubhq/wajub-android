@@ -88,6 +88,7 @@ class PayClient internal constructor(
     private val environment: () -> DeviceEnvironment = { WajubMobile.device },
     private val pause: suspend (Long) -> Unit = { delay(it) },
     private val random: Random = Random.Default,
+    private val clock: () -> Long = System::currentTimeMillis,
 ) {
     constructor(http: OkHttpClient = defaultHttp()) : this(OkHttpTransport(http))
 
@@ -95,10 +96,17 @@ class PayClient internal constructor(
     @Volatile
     var language: WajubLanguage = WajubLanguage.device()
 
-    suspend fun getSession(token: String): SessionData =
-        RawSessionResponse.fromJson(expectSuccess(send(token, ApiCall.Session), loading = true)).toModel()
+    // The 1.x calls below throw what they threw in 1.x: the 1.x WajubError for
+    // an answer that is not a 2xx, an IOException when none came back.
 
-    suspend fun getSdkConfig(token: String): SdkConfig = parseSdkConfig(expectSuccess(send(token, ApiCall.SdkConfig)))
+    suspend fun getSession(token: String): SessionData =
+        RawSessionResponse.fromJson(legacySuccess(sendRaw(token, ApiCall.Session))).toModel()
+
+    suspend fun getSdkConfig(token: String): SdkConfig = parseSdkConfig(legacySuccess(sendRaw(token, ApiCall.SdkConfig)))
+
+    /** `GET /pay/session`, its errors mapped as the spec says (load errors). */
+    internal suspend fun fetchSession(token: String): SessionData =
+        RawSessionResponse.fromJson(expectSuccess(send(token, ApiCall.Session), loading = true)).toModel()
 
     /**
      * POST /pay/process with a fresh Idempotency-Key, reused by its automatic
@@ -106,8 +114,8 @@ class PayClient internal constructor(
      * for an answer that is not a 2xx.
      */
     suspend fun process(token: String, channel: String, data: Map<String, Any?>): RawProcessResponse {
-        val response = send(token, ApiCall.Process, processPayload(channel, data), idempotencyKey = newIdempotencyKey())
-        return RawProcessResponse.fromJson(expectSuccess(response))
+        val response = sendRaw(token, ApiCall.Process, processPayload(channel, data), idempotencyKey = newIdempotencyKey())
+        return RawProcessResponse.fromJson(legacySuccess(response))
     }
 
     /** `{channel, data}` with `data._client` (spec §2.3) unless the caller set it. */
@@ -131,7 +139,7 @@ class PayClient internal constructor(
         restart: Boolean = false,
     ): RawProcessResponse {
         val payload = clientSessionPayload(channel, email, name, returnUrl, restart, emptyMap())
-        return RawProcessResponse.fromJson(expectSuccess(send(token, ApiCall.ClientSession, payload)))
+        return RawProcessResponse.fromJson(legacySuccess(sendRaw(token, ApiCall.ClientSession, payload)))
     }
 
     /**
@@ -141,11 +149,11 @@ class PayClient internal constructor(
      */
     suspend fun completeClientSession(token: String, clientSessionId: String): RawProcessResponse {
         val payload = JSONObject().put("client_session_id", clientSessionId)
-        return RawProcessResponse.fromJson(expectSuccess(send(token, ApiCall.ClientSessionComplete, payload)))
+        return RawProcessResponse.fromJson(legacySuccess(sendRaw(token, ApiCall.ClientSessionComplete, payload)))
     }
 
     suspend fun cancel(token: String): CancelResult =
-        CancelResult(redirectUrl = expectSuccess(send(token, ApiCall.Cancel, JSONObject())).str("redirect_url"))
+        CancelResult(redirectUrl = legacySuccess(sendRaw(token, ApiCall.Cancel, JSONObject())).str("redirect_url"))
 
     internal fun clientSessionPayload(
         channel: String,
@@ -169,6 +177,11 @@ class PayClient internal constructor(
     internal fun clientHeader(): String = environment().clientHeader
 
     /** The body of a 2xx, or the [WajubError] of any other answer. */
+    private fun legacySuccess(response: ApiResponse): JSONObject {
+        if (!response.isSuccess) throw WajubError.legacy(response.status, response.body, response.correlationId, response.retryAfter)
+        return response.body
+    }
+
     internal fun expectSuccess(response: ApiResponse, loading: Boolean = false): JSONObject {
         if (!response.isSuccess) throw errorOf(response, loading)
         return response.body
@@ -207,6 +220,7 @@ class PayClient internal constructor(
     ): ApiResponse {
         val text = body?.toString() ?: if (call.method == "POST") "{}" else null
         var attempt = 0
+        var sentAt: Long
         while (true) {
             val request = HttpRequest(
                 method = call.method,
@@ -215,6 +229,7 @@ class PayClient internal constructor(
                 body = text,
                 timeoutMs = call.timeoutMs,
             )
+            sentAt = clock()
             val outcome: Any = try {
                 transport.execute(request)
             } catch (failure: TransportException) {
@@ -226,10 +241,10 @@ class PayClient internal constructor(
                     is HttpResponse -> ApiResponse(
                         status = outcome.status,
                         body = parseObject(outcome.body),
-                        correlationId = outcome.header("X-Request-Id"),
+                        correlationId = outcome.header("X-Request-Id") ?: outcome.header("X-Trace-Id"),
                         retryAfter = outcome.header("Retry-After"),
                     )
-                    else -> throw outcome as TransportException
+                    else -> throw (outcome as TransportException).also { it.sentAt = sentAt }
                 }
             }
             pause(wait)

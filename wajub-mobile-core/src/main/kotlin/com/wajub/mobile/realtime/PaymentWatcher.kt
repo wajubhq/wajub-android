@@ -139,7 +139,10 @@ class PaymentWatcher internal constructor(
             var lastChangeAt = clock()
             var interval = schedule.intervalMs
             var failures = 0
-            var nextPollAt = clock()
+            // Waits are counted by the timer that runs them, the clock is
+            // only read for the cap and the slow-down.
+            var pollDue = true
+            var remaining = 0L
 
             // Sends the event of [status]; true when it ends the watch.
             suspend fun handle(status: PaymentStatus): Boolean {
@@ -163,7 +166,7 @@ class PaymentWatcher internal constructor(
                     send(WatchEvent.StillProcessing)
                     return@channelFlow
                 }
-                if (now >= nextPollAt) {
+                if (pollDue) {
                     var wait: Long
                     try {
                         val response = client.sendRaw(token, ApiCall.StatusPoll)
@@ -196,16 +199,19 @@ class PaymentWatcher internal constructor(
                     } catch (_: TransportException) {
                         wait = errorDelay(++failures)
                     }
-                    nextPollAt = clock() + wait
+                    pollDue = false
+                    remaining = wait
                     continue
                 }
-                when (val signal = withTimeoutOrNull(min(nextPollAt, deadline) - now) { signals.receive() }) {
-                    null -> Unit
-                    Signal.Wake -> nextPollAt = clock()
+                val waitStarted = clock()
+                val signal = withTimeoutOrNull(min(remaining, deadline - now).coerceAtLeast(1)) { signals.receive() }
+                remaining = (remaining - (clock() - waitStarted)).coerceAtLeast(0)
+                when (signal) {
+                    null, Signal.Wake -> pollDue = true
                     is Signal.Socket -> {
                         socketConnected = signal.connected
                         // Connected: the next poll can wait longer; lost: back to the base interval.
-                        if (!signal.connected) nextPollAt = min(nextPollAt, clock() + interval)
+                        if (!signal.connected) remaining = min(remaining, interval)
                     }
                     is Signal.Event -> if (handle(signal.status)) return@channelFlow
                 }
@@ -243,11 +249,8 @@ class PaymentWatcher internal constructor(
     private fun attemptEnded(status: PaymentStatus, language: WajubLanguage): WajubError {
         val code = status.errorCode ?: return WajubError.of("payment_attempt_ended", language)
         val known = ErrorCatalog.entry(code) != null
-        val message = when {
-            known -> ErrorCatalog.message(code, language, null)!!
-            language == WajubLanguage.En && status.payerMessage != null -> status.payerMessage
-            else -> ErrorCatalog.genericDecline(language)
-        }
+        // A decline code the catalogue does not name reads as the generic decline.
+        val message = if (known) ErrorCatalog.message(code, language, null)!! else ErrorCatalog.genericDecline(language)
         return WajubError(
             type = WajubErrorType.PaymentError,
             message = message,

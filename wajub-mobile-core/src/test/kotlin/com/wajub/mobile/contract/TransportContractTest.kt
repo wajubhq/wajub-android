@@ -3,6 +3,8 @@ package com.wajub.mobile.contract
 import com.wajub.mobile.API_URL
 import com.wajub.mobile.SDK_VERSION
 import com.wajub.mobile.checkout.CheckoutState
+import com.wajub.mobile.checkout.PresentOptions
+import com.wajub.mobile.checkout.SheetScreen
 import com.wajub.mobile.client.OkHttpTransport
 import com.wajub.mobile.client.PayClient
 import com.wajub.mobile.device.DeviceEnvironment
@@ -271,6 +273,41 @@ class TransportContractTest {
         runCurrent()
         assertEquals(CheckoutState.SUCCESS, controller.state)
         assertTrue(api.count("GET /pay/status") >= 2)
+
+        // Still `pending` 60 s after the last try: the request most likely never
+        // arrived. Back to the form with network_error; the next Pay reuses the key.
+        val lost = cmApi()
+            .on("POST /pay/process", FakeResponse.timeout())
+            .on("GET /pay/status", Fixtures.response("status-processing") { it.getJSONObject("transaction").put("status", "pending") })
+        val (again, events) = checkout(lost, PresentOptions(sessionToken = "t", locale = "en"))
+        again.start()
+        runCurrent()
+        again.selectMethod("mobile_money")
+        again.setPhone("670000000")
+        again.payMobileMoney()
+        advanceTimeBy(4_000)
+        runCurrent()
+        val lastTry = lost.times.last()
+        val key = lost.requests("POST /pay/process").first().headers.getValue("Idempotency-Key")
+        assertEquals(CheckoutState.PENDING, again.state)
+        advanceTimeBy(lastTry + 59_000 - testScheduler.currentTime)
+        runCurrent()
+        assertEquals(CheckoutState.PENDING, again.state, "not before 60 s")
+        advanceTimeBy(1_001)
+        runCurrent()
+        val form = assertIs<SheetScreen.Form>(again.screen.value)
+        assertEquals("Connection error. Check your network.", form.banner)
+        assertEquals(CheckoutState.COLLECTING_DETAILS, again.state)
+        assertTrue("error:network_error" in events.events)
+        val polls = lost.count("GET /pay/status")
+        advanceTimeBy(30_000)
+        assertEquals(polls, lost.count("GET /pay/status"), "no longer watching")
+        lost.set("POST /pay/process", Fixtures.response("process-idempotent-replay"))
+        lost.set("GET /pay/status", Fixtures.response("status-processing"))
+        again.payMobileMoney()
+        runCurrent()
+        assertEquals(key, lost.requests("POST /pay/process").last().headers["Idempotency-Key"], "the same key: a replay, never a second charge")
+        assertEquals(CheckoutState.APPROVAL_REQUIRED, again.state)
     }
 
     @Test

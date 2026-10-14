@@ -16,6 +16,7 @@ import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertIs
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -183,10 +184,15 @@ class LifecycleContractTest {
         controller.dismiss()
         controller.dismiss()
         controller.close()
+        // The host going away during the cancel loses neither it nor its redirect_url.
         controller.hostGone()
         runCurrent()
         controller.dismiss()
         assertEquals(1, recorder.results.size)
+        assertEquals(
+            CheckoutResult.Cancelled(CancelReason.Dismissed, Fixtures.body("cancel-200").getString("redirect_url")),
+            recorder.result,
+        )
         assertEquals(1, recorder.events.count { it.startsWith("complete:") })
         assertEquals(recorder.result, controller.result.value)
     }
@@ -230,6 +236,22 @@ class LifecycleContractTest {
         assertEquals(polls, api.count("GET /pay/status"))
         assertEquals(0, api.count("POST /pay/cancel"))
 
+        // Nothing fires after the result: an answer arriving later is dropped.
+        val slow = cmApi()
+            .on("POST /pay/process", Fixtures.response("process-processing-mobile-money-sandbox").let { FakeResponse(it.status, it.body, delayMs = 5_000) })
+            .on("GET /pay/status", Fixtures.response("status-succeeded"))
+        val (late, lateEvents) = checkout(slow)
+        late.start()
+        runCurrent()
+        late.selectMethod("mobile_money")
+        late.setPhone("670000000")
+        late.payMobileMoney()
+        runCurrent()
+        late.hostGone()
+        assertIs<CheckoutResult.Processing>(lateEvents.result, "a request without an answer may still charge")
+        advanceTimeBy(30_000)
+        assertEquals("complete:processing", lateEvents.events.last())
+
         // Success reached: complete.
         val paid = FakeApi().on("GET /pay/session", Fixtures.response("session-terminal-succeeded")).on("GET /pay/sdk-config", Fixtures.response("sdk-config-cm-stripe"))
         val (done, doneEvents) = checkout(paid)
@@ -259,6 +281,20 @@ class LifecycleContractTest {
         first.dismiss()
         runCurrent()
         assertIs<CheckoutResult.Cancelled>(first.result.value)
+
+        // A sheet can be presented again at once, from onComplete itself.
+        var reopened: com.wajub.mobile.checkout.CheckoutController? = null
+        val (third, _) = checkout(cmApi(), PresentOptions(sessionToken = "t", callbacks = CheckoutCallbacks()))
+        val next = com.wajub.mobile.checkout.CheckoutController(fakeSession(cmApi()), PresentOptions(sessionToken = "t"), backgroundScope)
+        third.onFinished = {
+            next.start()
+            reopened = next
+        }
+        third.start()
+        runCurrent()
+        third.hostGone()
+        assertNull(assertNotNull(reopened).result.value, "the new sheet is not rejected")
+        next.hostGone()
     }
 
     @Test
