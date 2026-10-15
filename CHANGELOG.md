@@ -23,19 +23,28 @@
 - A push approval shows "Approve the payment on your phone" with the provider's instruction, and so does
   a session reopened while its approval runs. An already paid session opens on the success screen; a
   failed, cancelled or expired one says so (`session_terminal_*`).
-- Confirmation steps work: OTP, card PIN, phone, date of birth and billing address
-  (`/pay/{step}/verify`, resend after 60 s), and the sandbox 3-D Secure email code. They used to fail
-  with `unsupported_action`.
+- Confirmation steps work: OTP, card PIN, phone, date of birth (typed, or picked in the platform's
+  date picker) and billing address (`/pay/{step}/verify`, each with its resend link after 60 s), and the
+  sandbox 3-D Secure email code. They used to fail with `unsupported_action`.
 - `PresentOptions` adds `appearance` (Wajub.js's appearance object: presets, variables, light, dark or
   auto, `inherit` from your Material theme, the merchant's branding underneath), `loader` (skeleton or
   spinner), `readyTimeout` (15 s, then `ready_timeout` with Retry), `returnUrl`, `mobileMoney`
   (`country`, `countryLocked`, `operatorMode`), `realtime` (your own Reverb or Soketi host, or polling
-  only), `cancelOnDismiss` and `autoCloseSuccess`.
+  only), `cancelOnDismiss` and `autoCloseSuccess`. Fonts your app ships (`res/font`, assets) reach the
+  sheet with `WajubFonts.register(name, fontFamily)`; `inherit` also takes your theme's body font.
+- Closing the sheet follows one rule on every platform: the payment is cancelled (`POST /pay/cancel`,
+  with `cancelOnDismiss`) only when the session is loaded, still `pending`, and no attempt is waiting
+  for its answer — before Pay, or after a definitive refusal or "Try again". From Pay until the API
+  answers for sure, and on the approval, USSD, "Payment in progress" and step screens, a dismiss is
+  `processing` and never cancels; while loading it is `cancelled` without a call; on the failure screen
+  it is `failed` with that error (the cancel is still sent in the background when it can be). "Cancel
+  payment" is offered on the same terms.
 - The status is read with `GET /pay/status` every 5 s (15 s while the socket is connected, slower after
   2 minutes), errors back off up to a minute, and the watch decides on every status: a `410` or a token
   that is no longer valid ends it (1.2 polled forever), an attempt that ended without charging is
-  reported, and after 15 minutes the result is `processing`. The socket follows the session's `echo`
-  host, port and TLS.
+  reported, and after 15 minutes the result is `processing` — counted on the device's monotonic clock
+  from the attempt, never by comparing the server's timestamps with the phone's clock. The socket
+  follows the session's `echo` host, port and TLS.
 - Every request sends `X-Wajub-Client`, `X-Request-Id` and the device's `Accept-Language`, has its own
   timeout (30 s, 60 s for payments), and retries what is safe: reads, and payments with the same
   `Idempotency-Key`. A payment request that gets no answer is never shown as a failure: the sheet waits
@@ -50,8 +59,33 @@
 - `PaymentSheet(wajubSession, onDismiss, onResult)`, `payMobileMoney`, `payCard`, `payCardHostedRedirect`,
   `payWallet`, `process(channel, data)`, `startClientSession`, `completeClientSession`, `watchStatus`,
   `watchStatusPolling`, `RealtimeSubscriber` and `StatusPoller` are deprecated; they keep working as in
-  1.2.1, with the same results and errors. The 1.2 sheet now runs the new screens and still calls
-  `onResult` with each answer, then with `Complete` once paid, and `onDismiss` when the payer closes it.
+  1.2.1, with the same results and errors. The 1.2 sheet runs the new screens and reports as 1.2.1 did:
+  `onResult` with each answer to a payment request (never a second `Complete` from its own watching, so
+  an app that watches the status itself is not told twice), `onDismiss` at once when the payer closes
+  it, and a cancel in the background only when nothing was submitted — never once Pay was pressed, even
+  after a refused number or "Try again".
+- The sheet is keyed on the session token, so a `WajubSession` created in the composable stays one sheet
+  across recompositions, and after a configuration change the callbacks called are those of the screen
+  now shown.
+- Fixed in the 1.2 watchers (`watchStatus`, `watchStatusPolling`, `RealtimeSubscriber`, `StatusPoller`),
+  which keep their flows, `intervalMs`, results and lack of time limit: they read `GET /pay/status`
+  instead of reloading the session; a session that is gone ends the flow with `Failed`
+  (`session_not_found` for `401`/`403`/`404`, the API's error for `410`) where they polled forever; a
+  payment back to `pending` after `processing` ends it with `Failed` (the decline code, or
+  `payment_attempt_ended`) where they reported `Processing` forever; a value is emitted only when the
+  result changes (`pending` then `processing` is one `Processing`, 1.2.1 sent two); errors back off 5 s,
+  10 s… up to a minute.
+- `SessionChannel.nameFr` is read from the API's `name.fr` key. 1.2.1 read `name_fr`, which the API
+  never sends, so it was always `null`.
+- Compatibility: the 1.2.1 constructors of `PayClient` (`new PayClient()` from Java included),
+  `MobileMoneyInput`, `WajubError`, `SessionTransaction`, `ProcessingContext`, `SessionChannel` and
+  `SessionData` are kept. `PresentOptions.toString()` no longer prints the session token.
+- Both artifacts ship R8 rules for the Pusher client (`-dontwarn` for its optional SLF4J binding), so
+  a minified app builds without rules of its own. `wajub-mobile-core` no longer depends on Moshi, which
+  it did not use.
+- The sheet uses stable Compose APIs only (no experimental Material 3 menu or date picker), so it runs
+  with Material 3 1.3 (Compose BOM 2024.12.01) and 1.4 (BOM 2025.09.01) alike. The device fingerprint
+  is computed once and off the main thread; solving the Altcha challenge stops when the sheet closes.
 
 ## 1.2.1
 

@@ -29,7 +29,7 @@ Both artifacts are on Maven Central.
 | Requirement | Version |
 |-------------|---------|
 | `minSdk` | 24 (Android 7.0) |
-| `compileSdk` / `targetSdk` | 35 |
+| `compileSdk` | 35 (the library sets no `targetSdk`: your app keeps its own) |
 | JVM target | 17 |
 | Kotlin | 2.0.21 |
 | Android Gradle Plugin | 8.7.3 |
@@ -85,11 +85,32 @@ Every text exists in English and French. The sheet's language is `PresentOptions
 | `returnUrl` | `null` | An https app link back into your app, sent to provider pages as `return_url`. Without it the payer comes back by hand |
 | `mobileMoney` | `MobileMoneyOptions()` | `country` (ISO-2 to start on), `countryLocked` (hide the selector), `operatorMode` (`Choose`: the list is shown; `Detect`: the detected operator shows inside the field, the list opens when needed) |
 | `realtime` | `null` | `RealtimeOptions(enabled, host, port, tls)`: a self-hosted Reverb or Soketi behind your own hostname, or `enabled = false` for polling only |
-| `cancelOnDismiss` | `true` | Swiping the sheet away before any attempt cancels the payment (`POST /pay/cancel`). `false` keeps it open so you can show the sheet again |
+| `cancelOnDismiss` | `true` | Closing the sheet while the payment can still be cancelled cancels it (`POST /pay/cancel`, see [Closing the sheet](#closing-the-sheet)). `false` keeps it open so you can show the sheet again |
 | `autoCloseSuccess` | `3000` | Milliseconds before the success screen closes itself; `0` keeps it until the payer taps Done |
 | `callbacks` | `CheckoutCallbacks()` | See below |
 
-To use your own `OkHttpClient` (proxy, pinning, logging), create the session yourself: `PaymentSheet(WajubMobile.createSession(token, okHttpClient), options) { … }`.
+To use your own `OkHttpClient` (proxy, pinning, logging), create the session yourself, once per token:
+
+```kotlin
+val session = remember(token) { WajubMobile.createSession(token, okHttpClient) }
+PaymentSheet(session, options) { result -> handle(result) }
+```
+
+The sheet is keyed on the token, so a session created again on a recomposition is still the same sheet, but `remember` saves the work. The SDK calls the API through a client derived from yours with `newBuilder()`: your interceptors, proxy, pinning and connection pool are kept; its own timeouts replace yours (connect 10 s, then 30 s per call, 60 s for a payment request); your client is left untouched.
+
+### Closing the sheet
+
+What a dismiss (the close button, a swipe, Back, a tap outside) does depends on where the payer is:
+
+| When | Result | `POST /pay/cancel` |
+|---|---|---|
+| Still loading | `Cancelled(dismissed)` | no |
+| Before any attempt, the payment `pending` | `Cancelled(dismissed)` | yes, with `cancelOnDismiss` (the default) |
+| From Pay until the API answers for sure, on the approval, USSD, "Payment in progress", step and verifying screens | `Processing` | never: an approval can still land |
+| After a definitive refusal (a `402`, a refused attempt) or "Try again" | as before any attempt | yes, with `cancelOnDismiss` |
+| On the failure screen | `Failed` with that error (no `onCancel`) | yes, in the background, when it can still be cancelled |
+
+"Cancel payment" is offered on the same terms. A session already decided when it loads closes on its own status at once.
 
 ## Callbacks
 
@@ -159,7 +180,7 @@ PresentOptions(
         variables = AppearanceVariables(
             colorPrimary = "#0F766E",
             borderRadius = "12px",
-            fontFamily = "Poppins",      // used when your app ships it
+            fontFamily = "Poppins",      // a font your app registers (below), else the system's
         ),
         disableAnimations = false,
     ),
@@ -168,7 +189,12 @@ PresentOptions(
 
 - Keys: `theme`, `colorScheme`, `inherit`, `variables` (`colorPrimary`, `colorBackground`, `colorText`, `colorTextSecondary`, `colorTextPlaceholder`, `colorDanger`, `colorSuccess`, `fontFamily`, `fontSizeBase`, `fontWeightNormal`, `fontWeightMedium`, `fontWeightBold`, `spacingUnit`, `borderRadius`, `spacingGridRow`, `spacingGridColumn`), and the top-level `primaryColor`, `secondaryColor`, `backgroundColor`, `fontFamily`, `borderRadius`, `buttonTextColor`, `inputBackgroundColor`, `inputBorderColor`, `textMutedColor`, `successColor`, `errorColor`, `shadow` (`none`/`low`/`high`), `labels` (`above`/`floating`), `disableAnimations`.
 - Values: colours `#rgb`, `#rrggbb`, `#rrggbbaa`, `rgb()`, `rgba()`; lengths `8px`, `8`, `0.5rem`; weights `400`…`700`, `normal`, `bold`. Anything else is ignored, never an error. `Appearance.fromMap(map)` reads the same object from decoded JSON.
-- Precedence, per token: `variables` > top-level keys > the preset > the app's theme (`inherit = true` reads your `MaterialTheme`, keeping only colours that contrast enough) > the merchant's branding from the dashboard > Wajub's default palette.
+- Precedence, per token: `variables` > top-level keys > the preset > the app's theme (`inherit = true` reads your `MaterialTheme`: its colours, keeping only those that contrast enough, `shapes.small` and `typography.bodyLarge`'s font) > the merchant's branding from the dashboard > Wajub's default palette.
+- Fonts: `fontFamily` (and the merchant's font) is a name; a CSS stack gives its first family. The sheet uses the family your app registers under that name, else a system font of that name, else the platform's. Fonts in `res/font` or assets reach the sheet only through `WajubFonts`, once, before showing it:
+
+  ```kotlin
+  WajubFonts.register("Poppins", FontFamily(Font(R.font.poppins_regular), Font(R.font.poppins_semibold, FontWeight.SemiBold)))
+  ```
 - Scheme: `colorScheme` (or `theme`) > the app's theme (`inherit`) > the merchant's `appearance_mode` > `auto` (the phone's, switching live).
 - The merchant's branding (logo, business name, colours, radius, font, weights) fills what you leave unset; a merchant colour that does not stand out on the background falls back to the default; a white-label merchant hides "Secured by Wajub".
 - The loader: `loader = LoaderStyle.Skeleton` draws pulsing placeholder blocks in these colours (static with `disableAnimations` or when the phone asks for reduced motion); `Spinner` a progress indicator.
@@ -189,7 +215,7 @@ when (outcome) {
     is ProcessOutcome.Complete -> Unit
     is ProcessOutcome.Processing -> Unit                                  // kind: Approval, Ussd, Pending — watch
     is ProcessOutcome.RequiresAction -> Unit                              // a page (url) or a step (step, stepId)
-    is ProcessOutcome.Failed -> showError(outcome.error)
+    is ProcessOutcome.Failed -> showError(outcome.error.message)
 }
 
 session.watch().events().collect { event ->                              // StatusChanged, Succeeded, Failed, Cancelled, Expired, StillProcessing
@@ -202,15 +228,15 @@ session.watch().events().collect { event ->                              // Stat
 - `status()`, `cancel()`, `watch(realtime, seenProcessing)`.
 - `MobileMoney` and `MobileMoneyRules` give the web checkout's number rules (national digits, validity, operator detection, E.164, format as you type) and choices, from the shared `mobile-money.json` tables.
 
-An app using only `wajub-mobile-core` on Android can set `WajubMobile.device` (`DeviceEnvironment`) to report the screen size and keep the install id in its no-backup files; `wajub-mobile-compose` does it on its own at start-up.
+An app using only `wajub-mobile-core` on Android can set `WajubMobile.device` (`DeviceEnvironment`) to report the screen size and keep the install id in its no-backup files (`FileInstallIdStore(File(context.noBackupFilesDir, "wajub-install-id"))`); `wajub-mobile-compose` does it on its own at start-up. Without it the install id lives in memory on Android (a new one per process) and in `~/.wajub/install-id` on a plain JVM; the SDK never writes to the temporary directory. The fingerprint is computed once, off the main thread.
 
 ## Migrating from 1.2
 
 Code written for 1.2 still compiles and gets what it got then; the new names sit beside the old ones, which are deprecated:
 
-- `PaymentSheet(wajubSession, onDismiss, onResult)` → `PaymentSheet(session, PresentOptions(), onComplete)`. The 1.2 sheet runs the new screens (French, failure screen with Try again, operators and their logos, approval and confirmation screens), and still calls `onResult` with each answer to a payment request, as in 1.2 (`RequiresAction(PushApproval)` for a push, `RequiresAction(Redirect | Confirm | Confirm3ds)` for a provider page the sheet opens, `Complete`, `Processing`, and the outcome of a card paid on the provider's page), then with `Complete` when the payment succeeds; `onDismiss` when the payer closes it — not when your app removes it. Provider pages, approvals, confirmation steps and status watching happen inside the sheet.
+- `PaymentSheet(wajubSession, onDismiss, onResult)` → `PaymentSheet(session, PresentOptions(), onComplete)` (keep your handlers: `onDismiss` becomes a `Cancelled(dismissed)` result, `onResult` the result or `callbacks.onSuccess` / `onError`). The 1.2 sheet runs the new screens (French, failure screen with Try again, operators and their logos, approval and confirmation screens) and reports as 1.2.1 did: `onResult` with each answer to a payment request (`RequiresAction(PushApproval)` for a push, `RequiresAction(Redirect | Confirm | Confirm3ds)` for a provider page the sheet opens, `Complete`, `Processing`, and the outcome of a card paid on the provider's page) — never a second `Complete` from its own watching, so an app that watches the status itself, as 1.2 apps did, is not told twice. `onDismiss` comes at once when the payer closes it (not when your app removes it), and, as in 1.2.1, the payment is cancelled in the background only if nothing was submitted; once Pay was pressed it is never cancelled, even after a refused number or "Try again".
 - `payMobileMoney`, `payCard`, `payCardHostedRedirect`, `payWallet`, `process(channel, data)`, `startClientSession`, `completeClientSession` → `process(ProcessRequest)`, `openClientSession`, `confirmClientSession`, which map every answer of the API (`ProcessOutcome`) and report errors as the spec says. The 1.2 methods keep their `PaymentResult` and their errors (the API's code and message; an `IOException` when no answer came back).
-- `watchStatus`, `watchStatusPolling`, `RealtimeSubscriber`, `StatusPoller` → `watch()`. The 1.2 watchers now poll `GET /pay/status` on the spec's schedule and end on a session that is gone (`410`, `401`) or an attempt that ended without charging, instead of polling forever.
+- `watchStatus`, `watchStatusPolling`, `RealtimeSubscriber`, `StatusPoller` → `watch()`. The 1.2 watchers keep their `Flow<PaymentResult>`, their `intervalMs` and their results for `succeeded` (`Complete`), `failed`, `cancelled` and `expired` (`Failed` with the status as code), and still have no time limit. What changed, each a 1.2.1 bug: they read `GET /pay/status` (1.2.1 reloaded the whole session every time); a session that is gone ends the flow with `Failed` (`session_not_found` for `401`/`403`/`404`, the API's error for `410`) where 1.2.1 polled forever; a payment back to `pending` after `processing` (an attempt that ended without charging) ends it with `Failed` (the decline code, or `payment_attempt_ended`) where 1.2.1 reported `Processing` forever; a new value is emitted only when the result changes (`pending` then `processing` is one `Processing`, 1.2.1 sent two); errors back off 5 s, 10 s… up to a minute (1.2.1: `intervalMs` × failures).
 - `SessionData.branding` (every value as text, JSON `null` used to arrive as `"null"`) → `SessionData.brand`.
 - The 1.2 methods send what they sent in 1.2 (`buildMobileMoneyRequest` keeps the number as given); the device signals (`data._client`) and the E.164 number come with `process(ProcessRequest)` and `MobileMoneyRules.requestData`. Every request, old or new, now carries `X-Wajub-Client`, `X-Request-Id` and `Accept-Language`, with its own timeout and the spec's retries.
 

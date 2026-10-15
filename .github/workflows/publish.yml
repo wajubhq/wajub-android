@@ -24,7 +24,8 @@ jobs:
           distribution: temurin
           java-version: '17'
       - uses: gradle/actions/setup-gradle@v4
-      - run: ./gradlew :wajub-mobile-core:test --no-daemon
+      # The same checks as CI (.github/workflows/ci.yml) before anything is released.
+      - run: ./gradlew :wajub-mobile-core:test :wajub-mobile-compose:testReleaseUnitTest :wajub-mobile-compose:assembleRelease --no-daemon
       - run: ./gradlew publishAndReleaseToMavenCentral --no-daemon --no-configuration-cache
         env:
           ORG_GRADLE_PROJECT_mavenCentralUsername: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
