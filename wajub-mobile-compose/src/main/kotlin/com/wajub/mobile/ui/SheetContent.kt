@@ -262,7 +262,7 @@ private fun MethodList(controller: CheckoutController, methods: List<PaymentMeth
                 enabled = !disabled,
                 onClick = { controller.selectMethod(method.id) },
                 tag = "wajub-method-${method.id}",
-                leading = { Logo(method.logo, methodBadge(method), tag = "wajub-method-logo-${method.id}") },
+                leading = { Logo(method.logo, methodBadge(method), tag = "wajub-method-logo-${method.id}", fallback = method.logoPng) },
                 title = if (method.family == "card" && method.name.isBlank()) strings.cardTitle else method.name,
                 subtitle = if (disabled) limitText(method.minAmount, method.maxAmount, amount, currency, strings, language) else null,
                 trailing = { Icon(Icons.AutoMirrored.Filled.KeyboardArrowRight, contentDescription = null, tint = look.colors.textPlaceholder.color()) },

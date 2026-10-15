@@ -54,6 +54,8 @@ data class PaymentMethod(
     /** Shown disabled when `amount_total` is outside the channel's limits. */
     val minAmount: Double? = null,
     val maxAmount: Double? = null,
+    /** The logo as a PNG: drawn when [logo] does not load. */
+    val logoPng: String? = null,
 ) {
     val slug: String get() = channels.first().slug
 
@@ -86,6 +88,7 @@ object PaymentMethods {
                             name = "Mobile Money",
                             logo = momo.first().logo,
                             channels = momo,
+                            logoPng = momo.first().logoPng,
                         )
                     }
                 }
@@ -101,6 +104,7 @@ object PaymentMethods {
                             cardFlavor = flavor,
                             minAmount = channel.minAmount,
                             maxAmount = channel.maxAmount,
+                            logoPng = channel.logoPng,
                         )
                     }
                 }
@@ -113,6 +117,7 @@ object PaymentMethods {
                         channels = listOf(channel),
                         minAmount = channel.minAmount,
                         maxAmount = channel.maxAmount,
+                        logoPng = channel.logoPng,
                     )
             }
         }
@@ -120,18 +125,22 @@ object PaymentMethods {
     }
 
     /**
-     * sdk-config is keyed by raw slug: an aggregate (`cm.mobile`) reads the
-     * entry of [operator]'s channel, else of any member (`cm.mtn`, `cm.orange`).
-     * A Mobile Money channel without an entry (sandbox) is a `form` asking the phone.
+     * sdk-config is keyed by the session's slugs: an aggregate (`cm.mobile`) has
+     * its own entry, and [operator]'s member entry is its prediction; an answer
+     * without the aggregate's entry falls back to its members' (`cm.mtn`,
+     * `cm.orange`). A Mobile Money channel without an entry is a `form` asking
+     * the phone.
      */
     fun entryFor(channel: SessionChannel, sdkConfig: SdkConfig?, operator: String? = null): SdkChannelConfig? {
         val entries = sdkConfig?.channels ?: emptyMap()
+        val own = entries[channel.slug]
         val entry = if (channel.operators.isNotEmpty()) {
             val members = channel.operators
-            members.firstOrNull { it.operator == operator }?.let { entries[it.slug] }
+            operator?.let { picked -> members.firstOrNull { it.operator == picked }?.let { entries[it.slug] } }
+                ?: own
                 ?: members.firstNotNullOfOrNull { entries[it.slug] }
         } else {
-            entries[channel.slug]
+            own
         }
         if (entry == null && MobileMoneyRules.isMobileMoney(channel)) {
             return SdkChannelConfig(available = true, sdk = "form", requiredFields = listOf("phone"))

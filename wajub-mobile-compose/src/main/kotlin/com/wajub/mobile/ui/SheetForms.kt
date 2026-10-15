@@ -156,7 +156,7 @@ private fun MobileMoneyFields(
                     enabled = !busy && !disabled,
                     onClick = { controller.pickOperator(choice.id) },
                     tag = "wajub-operator-${choice.id}",
-                    leading = { Logo(choice.logo, choice.badge, size = 32.dp, tag = "wajub-operator-logo-${choice.id}") },
+                    leading = { Logo(choice.logo, choice.badge, size = 32.dp, tag = "wajub-operator-logo-${choice.id}", fallback = choice.logoPng) },
                     title = choice.label,
                     subtitle = if (disabled) limitText(choice.minAmount, choice.maxAmount, amount, currency, strings, language) else null,
                     trailing = { RadioDot(form.selected == choice.id) },
@@ -178,7 +178,7 @@ private fun MobileMoneyFields(
             form.badge?.let { choice ->
                 {
                     IconButton(onClick = controller::openOperatorList, modifier = Modifier.testTag("wajub-operator-badge")) {
-                        Logo(choice.logo, choice.badge, size = 28.dp, tag = "wajub-badge-logo")
+                        Logo(choice.logo, choice.badge, size = 28.dp, tag = "wajub-badge-logo", fallback = choice.logoPng)
                     }
                 }
             }

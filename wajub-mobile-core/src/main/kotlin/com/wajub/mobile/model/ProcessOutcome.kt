@@ -118,10 +118,15 @@ enum class StepKind(
 /** The answer to a confirmation step. */
 sealed class StepResult {
     /**
-     * Accepted. [transaction] (null for 3-D Secure) decides: `succeeded` is
-     * paid, anything else is still to watch.
+     * Accepted. [next], when set, is the provider's next step (another code, a
+     * page) to follow as a payment answer; otherwise [transaction] (null for
+     * 3-D Secure) decides: `succeeded` is paid, anything else is still to watch.
      */
-    data class Accepted(val transaction: SessionTransaction?) : StepResult()
+    data class Accepted(
+        val transaction: SessionTransaction?,
+        /** A [ProcessOutcome.RequiresAction], or [ProcessOutcome.Failed] (`unsupported_action`). */
+        val next: ProcessOutcome? = null,
+    ) : StepResult()
 
     /**
      * Refused. [canRetryHere]: a wrong value with attempts left — stay on the

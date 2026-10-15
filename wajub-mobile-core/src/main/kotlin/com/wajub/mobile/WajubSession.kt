@@ -25,7 +25,6 @@ import com.wajub.mobile.realtime.PollSchedule
 import com.wajub.mobile.realtime.PusherConnector
 import com.wajub.mobile.realtime.RealtimeConnector
 import com.wajub.mobile.realtime.RealtimeEndpoint
-import com.wajub.mobile.realtime.RealtimeOptions
 import com.wajub.mobile.realtime.WATCH_CAP_MS
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -179,18 +178,14 @@ class WajubSession internal constructor(
     }
 
     /**
-     * Watches the payment until it decides (spec §13): `GET /pay/status` every
-     * 5 s (15 s while the socket is connected, slower after 2 minutes without
-     * a change), with the session's Pusher/Reverb socket next to it unless
-     * [realtime] turns it off. [seenProcessing]: an attempt of this payer is
-     * under way, so a `pending` status means it ended without charging.
+     * Watches the payment until it decides. [seenProcessing]: an attempt of this
+     * payer is under way, so a `pending` status means it ended without charging.
      */
-    suspend fun watch(realtime: RealtimeOptions? = null, seenProcessing: Boolean = true): PaymentWatcher =
-        watcher(session(), realtime, seenProcessing)
+    suspend fun watch(seenProcessing: Boolean = true): PaymentWatcher =
+        watcher(session(), seenProcessing)
 
     internal fun watcher(
         session: SessionData,
-        realtime: RealtimeOptions?,
         seenProcessing: Boolean,
         clock: () -> Long = { System.nanoTime() / 1_000_000 },
         random: Random = Random.Default,
@@ -204,7 +199,7 @@ class WajubSession internal constructor(
             client = client,
             token = token,
             transactionId = session.transaction.id,
-            endpoint = RealtimeEndpoint.resolve(session.echo, realtime),
+            endpoint = RealtimeEndpoint.resolve(session.echo),
             seenProcessing = seenProcessing,
             deadline = deadline,
             language = { language },
@@ -356,7 +351,7 @@ class WajubSession internal constructor(
     }
 
     /** Legacy polling-only API. */
-    @Deprecated("Use watch(RealtimeOptions(enabled = false)).")
+    @Deprecated("Use watch().")
     @Suppress("DEPRECATION")
     fun watchStatusPolling(intervalMs: Long = 5_000L): Flow<PaymentResult> =
         com.wajub.mobile.realtime.StatusPoller(client, token, intervalMs).poll()

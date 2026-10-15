@@ -241,6 +241,7 @@ data class RawChannel(
     val maxAmount: Double? = null,
     val currency: String,
     val operators: List<ChannelOperator> = emptyList(),
+    val logoPng: String? = null,
 ) {
     /** The 1.2 constructor, for Java and code compiled against 1.2. */
     constructor(
@@ -257,7 +258,7 @@ data class RawChannel(
     ) : this(id, slug, name, nameFr, type, logo, countries, minAmount, maxAmount, currency, operators = emptyList())
 
     fun toModel(): SessionChannel =
-        SessionChannel(id, slug, name, nameFr, type, logo, countries, minAmount, maxAmount, currency, operators)
+        SessionChannel(id, slug, name, nameFr, type, logo, countries, minAmount, maxAmount, currency, operators, logoPng)
 
     /**
      * The 1.2 `copy`, for Java and code compiled against 1.2. It keeps the
@@ -329,8 +330,10 @@ data class RawChannel(
                         operator = operator.lowercase(),
                         name = op.str("name") ?: operator,
                         logo = op.str("logo"),
+                        logoPng = op.str("logo_png"),
                     )
                 },
+                logoPng = obj.str("logo_png"),
             )
         }
     }

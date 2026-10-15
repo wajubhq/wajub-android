@@ -195,6 +195,8 @@ data class SessionChannel(
     val currency: String,
     /** The operators an aggregate channel (`cm.mobile`) folds; empty otherwise. */
     val operators: List<ChannelOperator> = emptyList(),
+    /** The logo as a PNG (`logo` is mostly an SVG), when there is one. */
+    val logoPng: String? = null,
 ) {
     /** The 1.2 constructor, for Java and code compiled against 1.2. */
     constructor(
@@ -269,6 +271,8 @@ data class ChannelOperator(
     val operator: String,
     val name: String,
     val logo: String? = null,
+    /** The logo as a PNG, when there is one. */
+    val logoPng: String? = null,
 )
 
 data class EchoConfig(

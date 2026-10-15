@@ -28,7 +28,7 @@ class ParsingContractTest {
     @Test
     fun `PR-01 parses every fixture`() = runTest {
         val names = Fixtures.names()
-        assertEquals(92, names.size, "the spec ships 92 fixtures")
+        assertEquals(97, names.size, "the spec ships 97 fixtures")
         for (name in names) {
             val file = Fixtures.file(name)
             if (name.startsWith("realtime-")) {
@@ -117,6 +117,7 @@ class ParsingContractTest {
 
     @Test
     fun `PR-05 parses branding with mixed types`() {
+        // 2.1: integers.
         val brand = session("session-cm-aggregate").brand
         assertTrue(brand.whiteLabel)
         assertEquals(40, brand.overlayIntensity)
@@ -124,6 +125,12 @@ class ParsingContractTest {
         assertEquals("400", brand.fontWeightBody)
         assertEquals("#0F766E", brand.primaryColor)
         assertEquals("light", brand.appearanceMode)
+        // 2.0: a weight as a numeric string.
+        for (name in listOf("session-saved-methods", "session-payer-bears-fee")) {
+            val old = session(name).brand
+            assertEquals("600", old.fontWeightHeading, name)
+            assertEquals("400", old.fontWeightBody, name)
+        }
 
         val objectWhiteLabel = session("session-cm-aggregate") {
             it.getJSONObject("branding").put("white_label", JSONObject().put("enabled", true).put("brand_name", "Akwa"))
@@ -163,8 +170,9 @@ class ParsingContractTest {
         assertNull(wallets.channels.first { it.slug == "ci.moov" }.logo)
         assertNull(wallets.channels.first().minAmount)
         val sandbox = session("session-sandbox-cm")
-        assertEquals("", sandbox.echo?.key, "echo.key null: no key, polling only")
+        assertNull(sandbox.echo, "2.1: no key, no echo")
         assertNull(sandbox.altcha)
+        assertEquals("", session("session-processing-mobile-money").echo?.key, "2.0: echo.key null, polling only")
     }
 
     @Test

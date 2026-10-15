@@ -35,8 +35,8 @@ class ChannelsContractTest {
 
         val sandbox = session("session-sandbox-cm")
         val cm = PaymentMethods.build(sandbox.channels, config("sdk-config-sandbox"), sandbox = true, WajubLanguage.En)
-        assertEquals(listOf("mobile_money", "card"), cm.map { it.id })
-        assertEquals(CardFlavor.SandboxForm, cm[1].cardFlavor)
+        assertEquals(listOf("card", "mobile_money"), cm.map { it.id }, "API order")
+        assertEquals(CardFlavor.SandboxForm, cm.first { it.id == "card" }.cardFlavor)
 
         // Bank, crypto, USSD… are not shown; with nothing left the sheet reports no_payment_method.
         val unsupported = JSONArray()
@@ -59,17 +59,24 @@ class ChannelsContractTest {
         assertEquals("Carte bancaire", PaymentMethods.build(sandbox.channels, sdk, true, WajubLanguage.Fr).first { it.id == "card" }.name)
         assertEquals("Card", PaymentMethods.build(sandbox.channels, sdk, true, WajubLanguage.En).first { it.id == "card" }.name)
         // Aggregates are "Mobile Money" in both.
-        assertEquals("Mobile Money", PaymentMethods.build(sandbox.channels, sdk, true, WajubLanguage.Fr).first().name)
+        assertEquals("Mobile Money", PaymentMethods.build(sandbox.channels, sdk, true, WajubLanguage.Fr).first { it.id == "mobile_money" }.name)
     }
 
     @Test
     fun `CH-03 resolves sdk-config for aggregates`() = runTest {
         val aggregate = session("session-cm-aggregate").channels.first { it.slug == "cm.mobile" }
         val sdk = config("sdk-config-cm-stripe")
-        assertFalse(sdk.channels.containsKey("cm.mobile"), "sdk-config uses raw slugs")
-        assertEquals(sdk.channels["cm.orange"], PaymentMethods.entryFor(aggregate, sdk, operator = "orange"))
+        // 2.1: keyed by the session's slugs, the aggregate's own entry beside its members'.
+        assertTrue(sdk.channels.containsKey("cm.mobile"))
+        assertEquals(sdk.channels["cm.mobile"], PaymentMethods.entryFor(aggregate, sdk), "the aggregate's own entry")
+        assertEquals(sdk.channels["cm.orange"], PaymentMethods.entryFor(aggregate, sdk, operator = "orange"), "a member's prediction")
         assertEquals(sdk.channels["cm.mtn"], PaymentMethods.entryFor(aggregate, sdk, operator = "mtn"))
-        assertEquals(sdk.channels["cm.mtn"], PaymentMethods.entryFor(aggregate, sdk), "no operator yet: any member's")
+
+        // 2.0: members only.
+        val members = SdkConfig(sdk.channels - "cm.mobile")
+        assertEquals(members.channels["cm.mtn"], PaymentMethods.entryFor(aggregate, members), "no operator yet: any member's")
+        assertEquals(members.channels["cm.orange"], PaymentMethods.entryFor(aggregate, members, operator = "orange"))
+        assertTrue(PaymentMethods.build(session("session-cm-aggregate").channels, members, false, WajubLanguage.En).any { it.id == "mobile_money" })
 
         // A member turned off by sdk-config is not offered.
         val api = FakeApi()
@@ -88,14 +95,25 @@ class ChannelsContractTest {
     fun `CH-04 defaults mobile money without sdk-config`() = runTest {
         val sandbox = session("session-sandbox-cm")
         val sdk = config("sdk-config-sandbox")
-        for (channel in sandbox.channels.filter { it.type == "mobile_money" }) {
+        // 2.1: sandbox Mobile Money has its entries.
+        val momo = sandbox.channels.filter { it.type == "mobile_money" }
+        for (channel in momo) {
             val entry = PaymentMethods.entryFor(channel, sdk)!!
-            assertTrue(entry.available)
-            assertEquals("form", entry.sdk)
-            assertEquals(listOf("phone"), entry.requiredFields)
+            assertEquals(sdk.channels[channel.slug], entry, channel.slug)
+            assertEquals("system", entry.provider)
         }
-        val methods = PaymentMethods.build(sandbox.channels, sdk, sandbox = true, WajubLanguage.En)
-        assertEquals(listOf("cm.eu", "cm.mobile"), methods.first { it.id == "mobile_money" }.channels.map { it.slug })
+        // 2.0: none; `form` + `phone` all the same.
+        val cardOnly = SdkConfig(sdk.channels.filterKeys { it == "card" })
+        for (config in listOf(sdk, cardOnly)) {
+            for (channel in momo) {
+                val entry = PaymentMethods.entryFor(channel, config)!!
+                assertTrue(entry.available)
+                assertEquals("form", entry.sdk)
+                assertEquals(listOf("phone"), entry.requiredFields)
+            }
+            val methods = PaymentMethods.build(sandbox.channels, config, sandbox = true, WajubLanguage.En)
+            assertEquals(listOf("cm.eu", "cm.mobile"), methods.first { it.id == "mobile_money" }.channels.map { it.slug })
+        }
     }
 
     @Test

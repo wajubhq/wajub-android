@@ -710,7 +710,8 @@ class CheckoutController internal constructor(
             altcha = null
             return prepared.await() ?: throw AltchaUnavailable(WajubError.of("security_check_failed", lang))
         }
-        if (_session.value?.altcha == null) return null
+        // After an Altcha refusal the session is reloaded even if it had no challenge.
+        if (_session.value?.altcha == null && !altchaReloaded) return null
         val challenge = try {
             session.session(forceRefresh = true).altcha
         } catch (e: CancellationException) {
@@ -759,31 +760,37 @@ class CheckoutController internal constructor(
             is ProcessOutcome.RequiresAction -> {
                 started()
                 outcome.transaction?.let { lastTransaction = it }
-                val step = outcome.step
-                when {
-                    outcome.action == "client_session" -> {
-                        val url = outcome.url
-                        if (url == null) {
-                            showFailed(WajubError.of("unsupported_action", lang))
-                            return
-                        }
-                        clientSessionId = outcome.clientSession?.id
-                        openPage(url, threeDs = false)
-                    }
-                    step != null && outcome.stepId != null -> {
-                        // The sandbox 3-D Secure code has its timeout; the other steps none.
-                        showStep(step, outcome.stepId, outcome.hint, outcome.timeoutSeconds)
-                        watch(seenProcessing = true)
-                    }
-                    outcome.url != null -> openPage(outcome.url, threeDs = outcome.action == "confirm_3ds")
-                    else -> showFailed(WajubError.of("unsupported_action", lang))
-                }
+                follow(outcome)
             }
             is ProcessOutcome.Failed -> {
                 // An action the sheet cannot take still came in a 2xx: the attempt started.
                 if (outcome.error.code == UNSUPPORTED_ACTION_CODE && outcome.error.httpStatus == null) started()
                 onRefused(outcome.error, outcome.transaction, form)
             }
+        }
+    }
+
+    // A page to open, a step to show, or a client session's page: from a payment
+    // answer, or from a confirmation step that chains another one.
+    private fun follow(outcome: ProcessOutcome.RequiresAction) {
+        val step = outcome.step
+        when {
+            outcome.action == "client_session" -> {
+                val url = outcome.url
+                if (url == null) {
+                    showFailed(WajubError.of("unsupported_action", lang))
+                    return
+                }
+                clientSessionId = outcome.clientSession?.id
+                openPage(url, threeDs = false)
+            }
+            step != null && outcome.stepId != null -> {
+                // The sandbox 3-D Secure code has its timeout; the other steps none.
+                showStep(step, outcome.stepId, outcome.hint, outcome.timeoutSeconds)
+                watch(seenProcessing = true)
+            }
+            outcome.url != null -> openPage(outcome.url, threeDs = outcome.action == "confirm_3ds")
+            else -> showFailed(WajubError.of("unsupported_action", lang))
         }
     }
 
@@ -845,8 +852,11 @@ class CheckoutController internal constructor(
         }
     }
 
+    // Recognised by its code; an answer without one (an older API) by its message,
+    // only when the session has a challenge.
     private fun altchaRefused(error: WajubError): Boolean =
-        _session.value?.altcha != null &&
+        error.code == "security_check_failed" ||
+            _session.value?.altcha != null &&
             ("altcha" in error.details || error.apiMessage?.contains("security challenge", ignoreCase = true) == true)
 
     // A 422 stays on the form: the phone's own message, field errors, or a banner (spec §9.1).
@@ -1030,7 +1040,7 @@ class CheckoutController internal constructor(
     private fun onStepResult(step: SheetScreen.Step, result: StepResult) {
         // A late answer (the status already decided) changes nothing.
         val current = _screen.value
-        if (finished || current !is SheetScreen.Step || current.stepId != step.stepId || !current.busy) return
+        if (finished || current !is SheetScreen.Step || current.stepId != step.stepId || current.kind != step.kind || !current.busy) return
         // The 3-D Secure code expired while it was being checked: a refusal ends it.
         if (step.kind == StepKind.ThreeDs && threeDsExpired && result !is StepResult.Accepted) {
             refusedForGood(null)
@@ -1041,6 +1051,21 @@ class CheckoutController internal constructor(
             is StepResult.Accepted -> {
                 val txn = result.transaction
                 txn?.let { lastTransaction = it }
+                // The provider asks for another step (a code after the birthday, a page after
+                // the PIN): followed as a payment answer. Paid only on the transaction's status.
+                when (val next = result.next) {
+                    is ProcessOutcome.RequiresAction -> {
+                        stepTimer?.cancel()
+                        follow(next)
+                        return
+                    }
+                    is ProcessOutcome.Failed -> {
+                        stepTimer?.cancel()
+                        showFailed(next.error)
+                        return
+                    }
+                    else -> Unit
+                }
                 when {
                     // 3-D Secure: verifying, until the status decides.
                     step.kind == StepKind.ThreeDs -> {
@@ -1091,7 +1116,7 @@ class CheckoutController internal constructor(
 
     private fun showIfStillOn(step: SheetScreen.Step, change: (SheetScreen.Step) -> SheetScreen.Step) {
         val current = _screen.value
-        if (current is SheetScreen.Step && current.stepId == step.stepId && !finished) show(change(current))
+        if (current is SheetScreen.Step && current.stepId == step.stepId && current.kind == step.kind && !finished) show(change(current))
     }
 
     /** "Resend code", offered 60 s after the step opened. */
@@ -1115,7 +1140,7 @@ class CheckoutController internal constructor(
             return
         }
         val data = _session.value ?: return
-        val w = session.watcher(data, options.realtime, seenProcessing, clock, random, connector, attemptStartedAt)
+        val w = session.watcher(data, seenProcessing, clock, random, connector, attemptStartedAt)
         watcher = w
         watchJob = scope.launch { w.events().collect { onWatchEvent(it) } }
     }

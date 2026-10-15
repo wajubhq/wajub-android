@@ -3,7 +3,6 @@ package com.wajub.mobile.checkout
 import com.wajub.mobile.Iso8601
 import com.wajub.mobile.model.SessionTransaction
 import com.wajub.mobile.model.WajubError
-import com.wajub.mobile.realtime.RealtimeOptions
 
 /** Wajub.js's 17 checkout states; [value] is the exact name (`3DS_REQUIRED`). */
 enum class CheckoutState(val value: String) {
@@ -66,8 +65,6 @@ data class PresentOptions(
     /** An https universal/app link back into your app, sent to provider pages as `return_url`. */
     val returnUrl: String? = null,
     val mobileMoney: MobileMoneyOptions = MobileMoneyOptions(),
-    /** Another socket host (self-hosted Reverb/Soketi), or no realtime at all. */
-    val realtime: RealtimeOptions? = null,
     /** A dismiss before any attempt cancels the payment (`POST /pay/cancel`). */
     val cancelOnDismiss: Boolean = true,
     /** Milliseconds before the success screen closes itself; 0 keeps it. */
@@ -77,7 +74,7 @@ data class PresentOptions(
     // The token stays out of logs.
     override fun toString(): String =
         "PresentOptions(sessionToken=<redacted>, locale=$locale, appearance=$appearance, loader=$loader, " +
-            "readyTimeout=$readyTimeout, returnUrl=$returnUrl, mobileMoney=$mobileMoney, realtime=$realtime, " +
+            "readyTimeout=$readyTimeout, returnUrl=$returnUrl, mobileMoney=$mobileMoney, " +
             "cancelOnDismiss=$cancelOnDismiss, autoCloseSuccess=$autoCloseSuccess)"
 }
 

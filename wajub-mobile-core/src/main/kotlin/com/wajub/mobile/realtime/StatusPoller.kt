@@ -17,7 +17,7 @@ import java.io.IOException
  * a final one — a session that is gone (401, 403, 404, 410) included. Errors back
  * off up to a minute.
  */
-@Deprecated("Use WajubSession.watch(RealtimeOptions(enabled = false)).")
+@Deprecated("Use WajubSession.watch().")
 class StatusPoller(
     private val client: PayClient,
     private val token: String,

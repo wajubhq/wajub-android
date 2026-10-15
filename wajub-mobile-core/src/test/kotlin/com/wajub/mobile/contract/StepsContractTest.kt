@@ -100,9 +100,15 @@ class StepsContractTest {
             val polls = api.count("GET /pay/status")
             controller.submitStep()
             runCurrent()
-            // `success` with a transaction still processing: waiting, not paid.
-            assertEquals(CheckoutState.PENDING, controller.state, fixture)
-            assertTrue(api.count("GET /pay/status") > polls, "watching")
+            val status = Fixtures.body("${kind.path}-verify-success").getJSONObject("transaction").getString("status")
+            if (status == "succeeded") {
+                // A step the provider settles at once (2.1): paid.
+                assertEquals(CheckoutState.SUCCESS, controller.state, fixture)
+            } else {
+                // `success` with a transaction still processing (2.0 answers): waiting, not paid.
+                assertEquals(CheckoutState.PENDING, controller.state, fixture)
+                assertTrue(api.count("GET /pay/status") > polls, "watching")
+            }
         }
         val paid = cmApi()
             .on("POST /pay/process", Fixtures.response("process-requires-otp"))
@@ -496,5 +502,56 @@ class StepsContractTest {
         assertEquals(2, api.count("GET /pay/status"), "at once, not at the next 5 s tick")
         assertEquals(CheckoutState.SUCCESS, controller.state)
         assertNull((controller.screen.value as? SheetScreen.Pending)?.url)
+    }
+
+    @Test
+    fun `CF-07 follows a chained step`() = runTest {
+        // A birthday, then a code the provider asks for: the OTP screen, then paid on the transaction's status.
+        val chained = cmApi()
+            .on("POST /pay/process", Fixtures.response("process-requires-birthday"))
+            .on("POST /pay/birthday/verify", Fixtures.response("birthday-verify-chained-otp"))
+            .on("POST /pay/otp/verify", Fixtures.response("otp-verify-success"))
+        val recorder = Recorder()
+        val controller = answered(chained, recorder)
+        assertEquals(CheckoutState.BIRTHDAY_REQUIRED, controller.state)
+        controller.setStepField("birthday", "1990-04-21")
+        controller.submitStep()
+        runCurrent()
+        val otp = assertIs<SheetScreen.Step>(controller.screen.value)
+        assertEquals(StepKind.Otp, otp.kind)
+        assertEquals(Fixtures.body("birthday-verify-chained-otp").getString("otp_id"), otp.stepId)
+        assertEquals(Fixtures.body("birthday-verify-chained-otp").getString("otp_masked_contact"), otp.hint)
+        assertNull(otp.attemptsRemaining, "a fresh attempt count")
+        assertEquals(CheckoutState.OTP_REQUIRED, controller.state)
+        assertTrue(recorder.events.none { it.startsWith("success:") }, "the birthday did not pay")
+        controller.setStepField("code", "123456")
+        controller.submitStep()
+        runCurrent()
+        assertEquals(otp.stepId, chained.lastBody("POST /pay/otp/verify").getString("otp_id"))
+        assertEquals(CheckoutState.SUCCESS, controller.state)
+
+        // A PIN, then a 3-D Secure page: onRedirect, the browser, PENDING.
+        val page = cmApi()
+            .on("POST /pay/process", Fixtures.response("process-requires-pin"))
+            .on("POST /pay/pin/verify", Fixtures.response("pin-verify-chained-redirect"))
+        val pageEvents = Recorder()
+        val pin = answered(page, pageEvents)
+        pin.setStepField("pin", "1234")
+        pin.submitStep()
+        runCurrent()
+        val url = Fixtures.body("pin-verify-chained-redirect").getString("confirm_url")
+        assertTrue("redirect:$url" in pageEvents.events, "${pageEvents.events}")
+        assertEquals(url, assertIs<SheetScreen.Pending>(pin.screen.value).url)
+        assertEquals(CheckoutState.PENDING, pin.state)
+
+        // A next step the sheet cannot take.
+        val odd = cmApi()
+            .on("POST /pay/process", Fixtures.response("process-requires-birthday"))
+            .on("POST /pay/birthday/verify", Fixtures.response("birthday-verify-chained-otp") { it.put("action", "confirm_magic") })
+        val magic = answered(odd)
+        magic.setStepField("birthday", "1990-04-21")
+        magic.submitStep()
+        runCurrent()
+        assertEquals("unsupported_action", assertIs<SheetScreen.Failed>(magic.screen.value).error.code)
     }
 }

@@ -39,7 +39,6 @@ import com.wajub.mobile.checkout.SheetScreen
 import com.wajub.mobile.checkout.ThemeTokens
 import com.wajub.mobile.model.ActionKind
 import com.wajub.mobile.model.PaymentResult
-import com.wajub.mobile.realtime.RealtimeOptions
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import org.junit.After
@@ -80,8 +79,8 @@ class PaymentSheetUiTest {
     }
 
     private fun controller(session: WajubSession, options: PresentOptions = PresentOptions(locale = "en")): CheckoutController {
-        // Polling only: no socket leaves the test machine.
-        val polling = options.copy(realtime = RealtimeOptions(enabled = false))
+        // The fake API's sessions have no `echo`: polling only, no socket leaves the test machine.
+        val polling = options
         val callbacks = CheckoutCallbacks(
             onRedirect = { events += "redirect:${it.url}" },
             onLoadError = { events += "loadError:${it.code}" },
@@ -145,6 +144,31 @@ class PaymentSheetUiTest {
         }
         compose.onNodeWithText("Moov", useUnmergedTree = true).assertExists()
         compose.onNodeWithText("MoMo", useUnmergedTree = true).assertExists()
+    }
+
+    @Test
+    fun `CH-06 prefers logo_png where SVG cannot be drawn`() {
+        // Android draws SVG: the logo first, its PNG when it does not load, else the brand badge.
+        val requested = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val api = FakeApi().on("GET /pay/session", "session-cm-aggregate").on("GET /pay/sdk-config", "sdk-config-cm-stripe")
+        val controller = controller(api.session())
+        compose.setContent {
+            CompositionLocalProvider(LocalWajubImageLoader provides svgFailing(LocalContext.current, requested)) {
+                PaymentSheetContent(controller)
+            }
+        }
+        controller.start()
+        idle()
+        // Mobile Money: its SVG fails, its PNG draws. The card has no PNG: its badge.
+        compose.onNodeWithTag("wajub-method-logo-mobile_money-badge", useUnmergedTree = true).assertDoesNotExist()
+        compose.onNodeWithTag("wajub-method-logo-card-badge", useUnmergedTree = true).assertExists()
+        assertTrue("https://assets.wajub.com/img/channels/momo.svg" in requested, "$requested")
+        assertTrue("https://api.wajub.com/img/channels/momo.png" in requested, "$requested")
+        compose.onNodeWithTag("wajub-method-mobile_money").performClick()
+        idle()
+        for (operator in listOf("mtn", "orange")) {
+            compose.onNodeWithTag("wajub-operator-logo-$operator-badge", useUnmergedTree = true).assertDoesNotExist()
+        }
     }
 
     @Test
@@ -378,7 +402,7 @@ class PaymentSheetUiTest {
             .on("POST /pay/cancel", "cancel-200")
         val results = mutableListOf<CheckoutResult>()
         val tick = mutableIntStateOf(0)
-        val options = PresentOptions(locale = "en", realtime = RealtimeOptions(enabled = false))
+        val options = PresentOptions(locale = "en")
         compose.setContent {
             tick.intValue
             // As integrators write it: a session created in the composable.
@@ -497,7 +521,7 @@ class PaymentSheetUiTest {
         val api = FakeApi().on("GET /pay/session", "session-sandbox-cm").on("GET /pay/sdk-config", "sdk-config-sandbox")
         val first = mutableListOf<CheckoutResult>()
         val second = mutableListOf<CheckoutResult>()
-        val options = PresentOptions(locale = "en", realtime = RealtimeOptions(enabled = false))
+        val options = PresentOptions(locale = "en")
         compose.setContent {
             PaymentSheet(api.session(), options) { first += it }
             PaymentSheet(api.session(), options) { second += it }
@@ -536,7 +560,6 @@ class CallbackActivity : ComponentActivity() {
                 session!!,
                 PresentOptions(
                     locale = "en",
-                    realtime = RealtimeOptions(enabled = false),
                     callbacks = CheckoutCallbacks(onComplete = { log += "callbacks.onComplete in $me" }),
                 ),
             ) { log += "onComplete in $me" }

@@ -260,16 +260,23 @@ internal fun RadioDot(selected: Boolean) {
  * the brand badge of the Mobile Money tables (spec MM-07).
  */
 @Composable
-internal fun Logo(url: String?, badge: BrandBadge, size: Dp = 36.dp, tag: String) {
-    var loaded by remember(url) { mutableStateOf(false) }
+internal fun Logo(url: String?, badge: BrandBadge, size: Dp = 36.dp, tag: String, fallback: String? = null) {
+    // The logo (an SVG most of the time), else its PNG when it does not load, else the badge.
+    var model by remember(url, fallback) { mutableStateOf(url ?: fallback) }
+    var loaded by remember(url, fallback) { mutableStateOf(false) }
     Box(contentAlignment = Alignment.Center, modifier = Modifier.size(size).testTag(tag)) {
         if (!loaded) BrandBadgeView(badge, size, tag = "$tag-badge")
-        if (url != null) {
+        model?.let { current ->
             AsyncImage(
-                model = url,
+                model = current,
                 imageLoader = imageLoader(),
                 contentDescription = badge.label,
-                onState = { loaded = it is AsyncImagePainter.State.Success },
+                onState = { state ->
+                    loaded = state is AsyncImagePainter.State.Success
+                    if (state is AsyncImagePainter.State.Error && current == url && fallback != null && fallback != url) {
+                        model = fallback
+                    }
+                },
                 modifier = Modifier.size(size).alpha(if (loaded) 1f else 0f).testTag("$tag-image"),
             )
         }

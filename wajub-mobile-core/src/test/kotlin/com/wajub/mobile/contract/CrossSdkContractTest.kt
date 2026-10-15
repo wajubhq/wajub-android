@@ -594,7 +594,7 @@ class CrossSdkContractTest {
         val api = cmApi()
             .on("POST /pay/process", Fixtures.response("process-processing-mobile-money-sandbox"))
             .on("GET /pay/status", Fixtures.response("status-processing"))
-        val h = hosted(api, PresentOptions(sessionToken = "t", locale = "en", realtime = com.wajub.mobile.realtime.RealtimeOptions(enabled = false)))
+        val h = hosted(api, PresentOptions(sessionToken = "t", locale = "en"))
         h.controller.start()
         runCurrent()
         val pressed = testScheduler.currentTime
@@ -622,7 +622,7 @@ class CrossSdkContractTest {
         val api = cmApi()
             .on("POST /pay/process", FakeResponse.timeout(delayMs = 60_000))
             .on("GET /pay/status", Fixtures.response("status-processing"))
-        val h = hosted(api, PresentOptions(sessionToken = "t", locale = "en", realtime = com.wajub.mobile.realtime.RealtimeOptions(enabled = false)))
+        val h = hosted(api, PresentOptions(sessionToken = "t", locale = "en"))
         h.controller.start()
         runCurrent()
         val pressed = testScheduler.currentTime

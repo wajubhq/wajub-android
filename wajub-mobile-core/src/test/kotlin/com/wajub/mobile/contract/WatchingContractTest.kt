@@ -8,7 +8,6 @@ import com.wajub.mobile.model.SessionData
 import com.wajub.mobile.realtime.PaymentWatcher
 import com.wajub.mobile.realtime.PusherConnector
 import com.wajub.mobile.realtime.RealtimeEndpoint
-import com.wajub.mobile.realtime.RealtimeOptions
 import com.wajub.mobile.realtime.WatchEvent
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.launch
@@ -35,10 +34,9 @@ class WatchingContractTest {
         data: SessionData = session("session-sandbox-cm"),
         seenProcessing: Boolean = true,
         socket: FakeSocket = FakeSocket(),
-        realtime: RealtimeOptions? = null,
     ): Pair<PaymentWatcher, MutableList<WatchEvent>> {
         api.clock = { testScheduler.currentTime }
-        val watcher = fakeSession(api).watcher(data, realtime, seenProcessing, { testScheduler.currentTime }, Random(5), socket)
+        val watcher = fakeSession(api).watcher(data, seenProcessing, { testScheduler.currentTime }, Random(5), socket)
         val events = mutableListOf<WatchEvent>()
         backgroundScope.launch { watcher.events().collect { events += it } }
         runCurrent()
@@ -218,8 +216,6 @@ class WatchingContractTest {
         val pusher = assertNotNull(RealtimeEndpoint.resolve(session("session-ci-xof-wallets").echo))
         assertEquals("ws-eu.pusher.com", pusher.host)
         assertTrue(pusher.tls)
-        val custom = RealtimeEndpoint.resolve(session("session-cm-aggregate").echo, RealtimeOptions(host = "reverb.shop.example.com", port = 6001, tls = false))
-        assertEquals(RealtimeEndpoint("wajub-app-key", "reverb.shop.example.com", 6001, false, "private-payment."), custom)
         val plain = session("session-cm-aggregate").echo!!.copy(wsHost = "ws://reverb.local", wsPort = 8080)
         assertEquals(false, RealtimeEndpoint.resolve(plain)?.tls)
 
@@ -239,7 +235,8 @@ class WatchingContractTest {
 
     @Test
     fun `WT-04 falls back to polling`() = runTest {
-        // echo key null (sandbox): no socket.
+        // echo absent (2.1, sandbox): no socket.
+        assertNull(session("session-sandbox-cm").echo)
         val socket = FakeSocket()
         val api = FakeApi().on("GET /pay/status", Fixtures.response("status-processing"))
         watch(api, session("session-sandbox-cm"), socket = socket)
@@ -247,14 +244,12 @@ class WatchingContractTest {
         assertNull(socket.channel)
         assertEquals(listOf(5_000L, 5_000L, 5_000L, 5_000L), gaps(api.times))
 
-        // echo absent, or realtime turned off.
-        val noEcho = session("session-cm-aggregate").copy(echo = null)
-        val absent = FakeSocket()
-        watch(FakeApi().on("GET /pay/status", Fixtures.response("status-processing")), noEcho, socket = absent)
-        assertNull(absent.channel)
-        val off = FakeSocket()
-        watch(FakeApi().on("GET /pay/status", Fixtures.response("status-processing")), session("session-cm-aggregate"), socket = off, realtime = RealtimeOptions(enabled = false))
-        assertNull(off.channel)
+        // echo with a null key (2.0): no socket either.
+        val nullKey = session("session-processing-mobile-money")
+        assertEquals("", nullKey.echo?.key)
+        val keyless = FakeSocket()
+        watch(FakeApi().on("GET /pay/status", Fixtures.response("status-processing")), nullKey, socket = keyless)
+        assertNull(keyless.channel)
 
         // A socket that never connects: polling stays at 5 s.
         val silent = FakeSocket()

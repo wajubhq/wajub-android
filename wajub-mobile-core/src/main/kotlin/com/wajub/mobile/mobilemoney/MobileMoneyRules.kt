@@ -19,6 +19,8 @@ data class OperatorChoice(
     /** The channel's `min_amount` / `max_amount`. */
     val minAmount: Double? = null,
     val maxAmount: Double? = null,
+    /** The logo as a PNG: drawn when [logo] does not load. */
+    val logoPng: String? = null,
 )
 
 /** A form problem found before submitting (errors.md §3.3). */
@@ -71,6 +73,7 @@ object MobileMoneyRules {
                         badge = data.badge(op.operator, op.name),
                         minAmount = channel.minAmount,
                         maxAmount = channel.maxAmount,
+                        logoPng = op.logoPng?.takeIf { it.startsWith("https://") },
                     )
                 }
             } else {
@@ -86,6 +89,7 @@ object MobileMoneyRules {
                     badge = data.badge(id, name),
                     minAmount = channel.minAmount,
                     maxAmount = channel.maxAmount,
+                    logoPng = channel.logoPng?.takeIf { it.startsWith("https://") },
                 )
             }
         }

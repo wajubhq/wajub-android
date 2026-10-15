@@ -37,10 +37,7 @@ internal object OutcomeMapper {
         }
         val transaction = raw.transaction?.toModel()
         val context = transaction?.processingContext
-        val unsupported = {
-            ProcessOutcome.Failed(WajubError.of("unsupported_action", language, apiMessage = "action: ${raw.action}"), transaction)
-        }
-        return when (val action = raw.action) {
+        return when (raw.action) {
             null -> when {
                 // No transaction, nothing to do: the outcome is unknown, watch the status.
                 transaction == null -> ProcessOutcome.Processing(transaction = null)
@@ -50,6 +47,18 @@ internal object OutcomeMapper {
                     ProcessOutcome.Processing(transaction, context?.payerInstruction, ProcessingKind.Approval)
                 else -> ProcessOutcome.Processing(transaction, context?.payerInstruction, ProcessingKind.Pending)
             }
+            else -> action(raw, transaction, language)
+        }
+    }
+
+    // A 202's `action` and the fields it comes with: a page, a step, a client
+    // session, or one the SDK cannot take (`unsupported_action`).
+    private fun action(raw: RawProcessResponse, transaction: com.wajub.mobile.model.SessionTransaction?, language: WajubLanguage): ProcessOutcome {
+        val action = raw.action ?: ""
+        val unsupported = {
+            ProcessOutcome.Failed(WajubError.of("unsupported_action", language, apiMessage = "action: ${raw.action}"), transaction)
+        }
+        return when (action) {
             "redirect", "confirm" -> raw.confirmUrl?.let {
                 ProcessOutcome.RequiresAction(action, url = it, transaction = transaction)
             } ?: unsupported()
@@ -79,7 +88,11 @@ internal object OutcomeMapper {
     private fun step(action: String, id: String?, hint: String?, transaction: com.wajub.mobile.model.SessionTransaction?) =
         id?.let { ProcessOutcome.RequiresAction(action, stepId = it, hint = hint, transaction = transaction) }
 
-    /** `POST /pay/{kind}/verify`: HTTP 200 with `{status: success|failed}`, or a 422. */
+    /**
+     * `POST /pay/{kind}/verify`: HTTP 200 with `{status: success|failed}`, or a 422.
+     * A `success` may carry the provider's next step (`action` and its fields,
+     * as a `/pay/process` 202): [StepResult.Accepted.next].
+     */
     fun step(response: ApiResponse, language: WajubLanguage, errorOf: (ApiResponse) -> WajubError): StepResult {
         if (!response.isSuccess) {
             val error = errorOf(response)
@@ -92,7 +105,18 @@ internal object OutcomeMapper {
             val stay = error.code.startsWith("invalid_") && (attempts ?: 0) > 0
             return StepResult.Rejected(error, attempts, canRetryHere = stay)
         }
-        return StepResult.Accepted(body.obj("transaction")?.let { runCatching { RawTransaction.fromJson(it).toModel() }.getOrNull() })
+        val transaction = body.obj("transaction")?.let { runCatching { RawTransaction.fromJson(it).toModel() }.getOrNull() }
+        val next = body.str("action")?.let {
+            // The step's transaction is often partial: the action's fields decide.
+            val fields = JSONObject(body.toString()).apply { remove("transaction") }
+            val raw = runCatching { RawProcessResponse.fromJson(fields) }.getOrNull()
+            if (raw == null) {
+                ProcessOutcome.Failed(WajubError.of("unsupported_action", language, apiMessage = "action: $it"), transaction)
+            } else {
+                action(raw, transaction, language)
+            }
+        }
+        return StepResult.Accepted(transaction, next)
     }
 
     /**

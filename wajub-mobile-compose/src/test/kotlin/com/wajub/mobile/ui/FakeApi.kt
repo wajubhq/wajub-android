@@ -24,6 +24,12 @@ object Fixtures {
     private val dir = File("../wajub-mobile-core/src/test/resources/fixtures")
 
     fun file(name: String): JSONObject = JSONObject(File(dir, "$name.json").readText())
+
+    /**
+     * A fixture's body as the UI tests serve it: sessions without `echo`, so the
+     * sheet polls and no socket leaves the test machine.
+     */
+    fun served(name: String): JSONObject = file(name).getJSONObject("body").also { it.remove("echo") }
 }
 
 /**
@@ -36,17 +42,15 @@ class FakeApi {
     private val bodies: MutableList<Pair<String, String>> = java.util.concurrent.CopyOnWriteArrayList()
 
     fun on(route: String, fixture: String): FakeApi = answer(route) {
-        val file = Fixtures.file(fixture)
-        file.getInt("http_status") to file.getJSONObject("body").toString()
+        Fixtures.file(fixture).getInt("http_status") to Fixtures.served(fixture).toString()
     }
 
     fun fail(route: String): FakeApi = answer(route) { throw IOException("offline") }
 
     /** A fixture's body, changed by [mutate]. */
     fun on(route: String, fixture: String, mutate: (JSONObject) -> Unit): FakeApi = answer(route) {
-        val file = Fixtures.file(fixture)
-        val body = file.getJSONObject("body").also(mutate)
-        file.getInt("http_status") to body.toString()
+        val body = Fixtures.served(fixture).also(mutate)
+        Fixtures.file(fixture).getInt("http_status") to body.toString()
     }
 
     fun lastBody(route: String): JSONObject = JSONObject(bodies.filter { it.first == route }.last().second)
@@ -92,6 +96,26 @@ class FakeApi {
 }
 
 /** Logos never load in tests: every image request fails. */
+/** Images that fail when they are SVG and draw otherwise; every request is recorded in [requested]. */
+fun svgFailing(context: Context, requested: MutableList<String>): ImageLoader =
+    ImageLoader.Builder(context).components {
+        add(object : Interceptor {
+            override suspend fun intercept(chain: Interceptor.Chain): ImageResult {
+                val url = chain.request.data.toString()
+                requested += url
+                return if (url.endsWith(".svg")) {
+                    ErrorResult(null, chain.request, IOException("no svg here"))
+                } else {
+                    coil.request.SuccessResult(
+                        android.graphics.drawable.ColorDrawable(android.graphics.Color.RED),
+                        chain.request,
+                        coil.decode.DataSource.MEMORY,
+                    )
+                }
+            }
+        })
+    }.build()
+
 fun failingImages(context: Context): ImageLoader =
     ImageLoader.Builder(context).components {
         add(object : Interceptor {

@@ -204,4 +204,56 @@ class LoadingContractTest {
         assertEquals(WajubLanguage.En, languageOf("session-ci-xof-wallets", null, "de-DE"), "neither fr nor en: en")
         assertEquals(WajubLanguage.Fr, languageOf("session-ci-xof-wallets", "fr-SN", "en-US"))
     }
+
+    @Test
+    fun `LD-10 reads the refusal left at load`() = runTest {
+        // The payment was refused before this sheet: the form opens, without a failure.
+        val left = FakeApi()
+            .on("GET /pay/session", Fixtures.response("session-pending-after-refusal"))
+            .on("GET /pay/sdk-config", Fixtures.response("sdk-config-sandbox"))
+            .on("POST /pay/process", FakeResponse.timeout())
+            .on("GET /pay/status", Fixtures.response("status-pending-attempt-refused"))
+        val (controller, recorder) = checkout(left)
+        controller.start()
+        runCurrent()
+        assertEquals("insufficient_funds", controller.transaction?.errorCode)
+        assertIs<SheetScreen.Methods>(controller.screen.value)
+        assertTrue(recorder.events.none { it.startsWith("error:") || it.startsWith("loadError:") }, "${recorder.events}")
+
+        // The same code after an attempt without an answer is not this sheet's refusal:
+        // the 60 s rule sends the payer back to the form.
+        controller.selectMethod("mobile_money")
+        controller.setPhone("670000000")
+        controller.payMobileMoney()
+        advanceTimeBy(5_000)
+        runCurrent()
+        assertEquals(CheckoutState.PENDING, controller.state)
+        advanceTimeBy(70_000)
+        runCurrent()
+        assertEquals("Connection error. Check your network.", assertIs<SheetScreen.Form>(controller.screen.value).banner)
+
+        // A different code is: the attempt arrived and was refused.
+        val other = FakeApi()
+            .on("GET /pay/session", Fixtures.response("session-pending-after-refusal"))
+            .on("GET /pay/sdk-config", Fixtures.response("sdk-config-sandbox"))
+            .on("POST /pay/process", FakeResponse.timeout())
+            .on("GET /pay/status", Fixtures.response("status-pending-attempt-refused") { it.getJSONObject("transaction").put("error_code", "expired_card") })
+        val (refused, _) = checkout(other)
+        refused.start()
+        runCurrent()
+        refused.selectMethod("mobile_money")
+        refused.setPhone("670000000")
+        refused.payMobileMoney()
+        advanceTimeBy(5_000)
+        runCurrent()
+        assertEquals("expired_card", assertIs<SheetScreen.Failed>(refused.screen.value).error.code)
+
+        // `null` without a refusal (2.1), and a missing key reads as null (2.0).
+        val clean = com.wajub.mobile.mapper.RawSessionResponse.fromJson(Fixtures.body("session-cm-aggregate")).toModel()
+        assertEquals(null, clean.transaction.errorCode)
+        val older = com.wajub.mobile.mapper.RawSessionResponse.fromJson(
+            Fixtures.body("session-cm-aggregate").also { it.getJSONObject("transaction").remove("error_code") },
+        ).toModel()
+        assertEquals(null, older.transaction.errorCode)
+    }
 }

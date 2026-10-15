@@ -49,6 +49,7 @@ class ErrorsContractTest {
         "broadcasting-auth-403" to Expected("merchant_restricted", payment, false),
         "cancel-400-not-cancellable" to Expected("not_processable", invalid, false),
         "client-session-422-sandbox" to Expected("client_session_unavailable", invalid, false, param = "request"),
+        "client-session-422-security-check-failed" to Expected("security_check_failed", invalid, true, param = "request"),
         "client-session-complete-402" to Expected("failed", payment, true, declineCode = "failed"),
         "client-session-complete-422-expired" to Expected("client_session_expired", invalid, true, param = "request"),
         "error-401-invalid-token" to Expected("session_not_found", auth, false),
@@ -70,6 +71,7 @@ class ErrorsContractTest {
         "process-422-operator-mismatch" to Expected("validation_error", invalid, true, param = "phone"),
         "process-422-over-mobile-money-limit-sandbox" to Expected("validation_error", invalid, true, param = "request"),
         "process-422-raw-card-data-live" to Expected("raw_card_data_not_accepted", invalid, false, param = "card"),
+        "process-422-security-check-failed" to Expected("security_check_failed", invalid, true, param = "request"),
         "process-422-sandbox-invalid-test-number" to Expected("validation_error", invalid, true, param = "data.phone"),
         "process-422-unknown-channel" to Expected("validation_error", invalid, true, param = "channel"),
         "process-422-validation" to Expected("validation_error", invalid, true),
@@ -308,5 +310,84 @@ class ErrorsContractTest {
             val actual = MessageDigest.getInstance("SHA-256").digest(file.readBytes()).joinToString("") { "%02x".format(it) }
             assertEquals(sum, actual, "$path differs from the spec")
         }
+    }
+
+    @Test
+    fun `AL-02 recognises the altcha refusal by its code`() = runTest {
+        val salt = "8f2a1c?expires=1760000000"
+        fun challengeFor(n: Int) = JSONObject().put("algorithm", "SHA-256")
+            .put("challenge", MessageDigest.getInstance("SHA-256").digest("$salt$n".toByteArray()).joinToString("") { "%02x".format(it) })
+            .put("salt", salt).put("signature", "SIG").put("maxnumber", 1_000)
+        fun withChallenge(n: Int) = Fixtures.response("session-cm-aggregate") { it.put("altcha", challengeFor(n)) }
+        // By its code, whatever its message says.
+        val refusal = Fixtures.response("process-422-security-check-failed") { it.put("message", "Something else.").remove("errors") }
+
+        val api = FakeApi()
+            .on("GET /pay/session", withChallenge(11), withChallenge(12))
+            .on("GET /pay/sdk-config", Fixtures.response("sdk-config-cm-stripe"))
+            .on("POST /pay/process", refusal, Fixtures.response("process-processing-mobile-money-sandbox"))
+            .on("GET /pay/status", Fixtures.response("status-processing"))
+        val (controller, recorder) = checkout(api)
+        controller.start()
+        runCurrent()
+        controller.selectMethod("mobile_money")
+        controller.setPhone("670000000")
+        controller.payMobileMoney()
+        runCurrent()
+        assertEquals(2, api.count("GET /pay/session"), "the session reloaded once")
+        val sent = api.requests("POST /pay/process")
+        assertEquals(listOf(11, 12), sent.map { JSONObject(it.body!!).getJSONObject("data").getJSONObject("altcha").getInt("number") })
+        assertNotEquals(sent[0].headers["Idempotency-Key"], sent[1].headers["Idempotency-Key"], "a new key: the payload changed")
+        assertEquals(CheckoutState.APPROVAL_REQUIRED, controller.state)
+        assertTrue(recorder.events.none { it.startsWith("error:") }, "the first refusal is handled silently")
+
+        // Refused again: FAILED security_check_failed, retryable — not field errors.
+        val twice = FakeApi()
+            .on("GET /pay/session", withChallenge(11), withChallenge(12))
+            .on("GET /pay/sdk-config", Fixtures.response("sdk-config-cm-stripe"))
+            .on("POST /pay/process", Fixtures.response("process-422-security-check-failed"))
+        val (again, _) = checkout(twice)
+        again.start()
+        runCurrent()
+        again.selectMethod("mobile_money")
+        again.setPhone("670000000")
+        again.payMobileMoney()
+        runCurrent()
+        assertEquals(2, twice.count("POST /pay/process"))
+        val failed = assertIs<SheetScreen.Failed>(again.screen.value).error
+        assertEquals("security_check_failed", failed.code)
+        assertTrue(failed.retryable)
+
+        // /pay/client-session too.
+        val card = FakeApi()
+            .on("GET /pay/session", withChallenge(11), withChallenge(12))
+            .on("GET /pay/sdk-config", Fixtures.response("sdk-config-card-paystack"))
+            .on("POST /pay/client-session", Fixtures.response("client-session-422-security-check-failed"), Fixtures.response("client-session-start-202"))
+            .on("GET /pay/status", Fixtures.response("status-processing"))
+        val (paying, _) = checkout(card)
+        paying.start()
+        runCurrent()
+        paying.selectMethod("card")
+        paying.payCard()
+        runCurrent()
+        assertEquals(listOf(11, 12), card.requests("POST /pay/client-session").map { JSONObject(it.body!!).getJSONObject("altcha").getInt("number") })
+        assertEquals(CheckoutState.PENDING, paying.state)
+
+        // A session loaded without a challenge: the refusal still reloads it, and its new challenge is solved.
+        val late = FakeApi()
+            .on("GET /pay/session", Fixtures.response("session-cm-aggregate"), withChallenge(13))
+            .on("GET /pay/sdk-config", Fixtures.response("sdk-config-cm-stripe"))
+            .on("POST /pay/process", Fixtures.response("process-422-security-check-failed"), Fixtures.response("process-processing-mobile-money-sandbox"))
+            .on("GET /pay/status", Fixtures.response("status-processing"))
+        val (reloaded, _) = checkout(late)
+        reloaded.start()
+        runCurrent()
+        reloaded.selectMethod("mobile_money")
+        reloaded.setPhone("670000000")
+        reloaded.payMobileMoney()
+        runCurrent()
+        val bodies = late.requests("POST /pay/process").map { JSONObject(it.body!!).getJSONObject("data") }
+        assertEquals(false, bodies[0].has("altcha"))
+        assertEquals(13, bodies[1].getJSONObject("altcha").getInt("number"))
     }
 }
