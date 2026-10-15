@@ -78,6 +78,9 @@ class KnownBugsTest {
         val results = session.watchStatusPolling(intervalMs = 50).toList()
         val failed = assertIs<PaymentResult.Failed>(results.last())
         assertEquals("session_terminal_expired", failed.error.code)
+        // The error the 1.x calls give for a 410.
+        assertEquals(com.wajub.mobile.model.WajubErrorType.AuthenticationError, failed.error.type)
+        assertEquals(false, failed.error.retryable)
         assertEquals(2, api.count("GET /pay/status"), "one error, backed off, then the 410 ends it")
     }
 

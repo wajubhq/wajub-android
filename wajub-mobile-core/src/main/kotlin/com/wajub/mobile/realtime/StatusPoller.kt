@@ -37,6 +37,7 @@ class StatusPoller(
             schedule = PollSchedule.fixed(intervalMs),
             authUrl = "$API_URL/pay/broadcasting/auth",
             authHeaders = emptyMap(),
+            legacyErrors = true,
         )
         emitAll(watcher.events().toPaymentResults(transaction))
     }

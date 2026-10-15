@@ -195,9 +195,11 @@ class WajubSession internal constructor(
         clock: () -> Long = { System.nanoTime() / 1_000_000 },
         random: Random = Random.Default,
         connector: RealtimeConnector = PusherConnector,
+        startedAt: Long? = null,
     ): PaymentWatcher {
-        // 15 minutes of the device's monotonic clock: never a server timestamp against the device's.
-        val deadline = clock() + WATCH_CAP_MS
+        // 15 minutes of the device's monotonic clock from the attempt (the Pay press):
+        // never a server timestamp against the device's.
+        val deadline = (startedAt ?: clock()) + WATCH_CAP_MS
         return PaymentWatcher(
             client = client,
             token = token,

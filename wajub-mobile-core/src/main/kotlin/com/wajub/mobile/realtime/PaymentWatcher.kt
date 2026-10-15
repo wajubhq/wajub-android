@@ -87,6 +87,8 @@ class PaymentWatcher internal constructor(
     private val connector: RealtimeConnector = PusherConnector,
     private val authUrl: String,
     private val authHeaders: Map<String, String>,
+    // The 1.x watchers end a gone session with the 1.x calls' error (an AuthenticationError for 401/404/410).
+    private val legacyErrors: Boolean = false,
 ) {
     private sealed class Signal {
         data object Wake : Signal()
@@ -139,6 +141,7 @@ class PaymentWatcher internal constructor(
         try {
             var socketConnected = false
             var lastStatus: String? = null
+            var lastErrorCode: String? = null
             var lastChangeAt = clock()
             var interval = schedule.intervalMs
             var failures = 0
@@ -154,8 +157,10 @@ class PaymentWatcher internal constructor(
                     send(event)
                     return true
                 }
-                if (status.status != lastStatus) {
+                // A new refusal on a payment still `pending` is news too.
+                if (status.status != lastStatus || status.errorCode != lastErrorCode) {
                     lastStatus = status.status
+                    lastErrorCode = status.errorCode
                     lastChangeAt = clock()
                     interval = schedule.intervalMs
                     send(WatchEvent.StatusChanged(status))
@@ -187,6 +192,10 @@ class PaymentWatcher internal constructor(
                                     }
                                     interval
                                 }
+                            }
+                            legacyErrors && response.status in setOf(401, 403, 404, 410) -> {
+                                send(WatchEvent.Failed(WajubError.legacy(response.status, response.body, response.correlationId, response.retryAfter)))
+                                return@channelFlow
                             }
                             response.status == 401 || response.status == 403 || response.status == 404 -> {
                                 send(WatchEvent.Failed(WajubError.of("session_not_found", language())))
@@ -251,18 +260,21 @@ class PaymentWatcher internal constructor(
         }
     }
 
-    private fun attemptEnded(status: PaymentStatus, language: WajubLanguage): WajubError {
-        val code = status.errorCode ?: return WajubError.of("payment_attempt_ended", language)
-        val known = ErrorCatalog.entry(code) != null
-        // A decline code the catalogue does not name reads as the generic decline.
-        val message = if (known) ErrorCatalog.message(code, language, null)!! else ErrorCatalog.genericDecline(language)
-        return WajubError(
-            type = WajubErrorType.PaymentError,
-            message = message,
-            code = code,
-            declineCode = code,
-            retryable = true,
-            apiMessage = status.payerMessage,
-        )
+    internal companion object {
+        /** The refusal a `pending` status carries after an attempt: its decline code, or `payment_attempt_ended`. */
+        fun attemptEnded(status: PaymentStatus, language: WajubLanguage): WajubError {
+            val code = status.errorCode ?: return WajubError.of("payment_attempt_ended", language)
+            val known = ErrorCatalog.entry(code) != null
+            // A decline code the catalogue does not name reads as the generic decline.
+            val message = if (known) ErrorCatalog.message(code, language, null)!! else ErrorCatalog.genericDecline(language)
+            return WajubError(
+                type = WajubErrorType.PaymentError,
+                message = message,
+                code = code,
+                declineCode = code,
+                retryable = true,
+                apiMessage = status.payerMessage,
+            )
+        }
     }
 }

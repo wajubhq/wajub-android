@@ -161,8 +161,12 @@ class CheckoutController internal constructor(
 
     // Each press of Pay; an answer for an older one is dropped.
     private var attemptSeq = 0
-    private var completing = false
+    // `/pay/client-session/complete` calls in flight (one per return from the PSP's page).
+    private var completions = 0
     private var heldFailure: WajubError? = null
+    // When the attempt started (the Pay press, or the load of a payment already under way):
+    // the 15 minutes of watching count from here.
+    private var attemptStartedAt: Long? = null
     private var knownErrorCode: String? = null
     private var errorCodeBeforeAttempt: String? = null
     private var threeDsExpired = false
@@ -208,6 +212,11 @@ class CheckoutController internal constructor(
     fun start() {
         if (started) return
         started = true
+        if (scope.coroutineContext[Job]?.isActive == false) {
+            // The host is already gone: nothing was shown, nothing to cancel.
+            finish(CheckoutResult.Cancelled(CancelReason.HostGone, null), release = false)
+            return
+        }
         if (!ActiveSheet.claim(this)) {
             // Another sheet is open: this one rejects at once and leaves it alone.
             finish(CheckoutResult.Failed(WajubError.of("sheet_already_presented", lang), null), release = false)
@@ -281,6 +290,8 @@ class CheckoutController internal constructor(
     private suspend fun onLoaded(loaded: SessionData, config: Deferred<SdkConfig?>) {
         _session.value = loaded
         lastTransaction = loaded.transaction
+        // A refusal an earlier presentation left on the payment is not news to this one.
+        knownErrorCode = loaded.transaction.errorCode
         _language.value = WajubLanguage.resolve(options.locale, loaded.sessionLocale, deviceLanguage())
         session.language = lang
         val txn = loaded.transaction
@@ -295,16 +306,26 @@ class CheckoutController internal constructor(
             "cancelled" -> return ended(config, "session_terminal_cancelled", CheckoutState.CANCELLED)
             "expired" -> return ended(config, "session_terminal_expired", CheckoutState.EXPIRED)
         }
+        loaded.altcha?.let { challenge -> altcha = scope.async(compute) { Altcha.solve(challenge) } }
+        if (txn.status.lowercase() in setOf("processing", "partial")) {
+            // An attempt under way: its screen from the session alone, at once. sdk-config
+            // (for a later Try again) arrives when it does, or never.
+            methods = PaymentMethods.build(loaded.channels, null, txn.sandbox, lang)
+            becomeReady()
+            restore(txn)
+            scope.launch {
+                val late = config.await() ?: return@launch
+                if (finished) return@launch
+                sdkConfig = late
+                methods = PaymentMethods.build(loaded.channels, late, txn.sandbox, lang)
+                method = method?.let { m -> methods.firstOrNull { it.id == m.id } } ?: method
+            }
+            return
+        }
         sdkConfig = config.await()
         // The Mobile Money tables are read once, off the main thread.
         withContext(compute) { MobileMoney.data() }
         methods = PaymentMethods.build(loaded.channels, sdkConfig, txn.sandbox, lang)
-        loaded.altcha?.let { challenge -> altcha = scope.async(compute) { Altcha.solve(challenge) } }
-        if (txn.status.lowercase() in setOf("processing", "partial")) {
-            becomeReady()
-            restore(txn)
-            return
-        }
         if (methods.isEmpty()) {
             // Without sdk-config (its call failed) nothing says no method exists: Retry may find one.
             loadFailed(WajubError.of(if (sdkConfig == null) "load_error" else "no_payment_method", lang))
@@ -344,6 +365,7 @@ class CheckoutController internal constructor(
         method = methods.firstOrNull { m -> m.channels.any { it.slug == context?.channelSlug || it.operators.any { op -> op.slug == context?.channelSlug } } }
         attemptInFlight = true
         undecided = true
+        attemptStartedAt = clock()
         attemptChannel = context?.channelSlug
         lastUrl = context?.actionUrl
         when {
@@ -625,6 +647,7 @@ class CheckoutController internal constructor(
         if (cancelling != null || finished) return
         attemptSeq++
         undecided = true
+        attemptStartedAt = clock()
         errorCodeBeforeAttempt = knownErrorCode
         heldFailure = null
         threeDsExpired = false
@@ -638,7 +661,17 @@ class CheckoutController internal constructor(
         sawProcessing = false
         show(form.copy(busy = true, banner = null))
         val run: suspend (String) -> Unit = run@{ key ->
-            val solution = takeAltcha()
+            val solution = try {
+                takeAltcha()
+            } catch (failure: AltchaUnavailable) {
+                // Nothing was sent: the next Pay solves a new challenge.
+                if (finished) return@run
+                attemptInFlight = false
+                undecided = false
+                show(form.copy(busy = false, banner = failure.error.message))
+                fire { callbacks.onError?.invoke(failure.error) }
+                return@run
+            }
             if (finished) return@run
             val outcome = try {
                 request(solution, key)
@@ -667,11 +700,15 @@ class CheckoutController internal constructor(
 
     private class CardNotTokenized(message: String) : Exception(message)
 
+    // Altcha is on but no solution came: the request is not sent.
+    private class AltchaUnavailable(val error: WajubError) : Exception(error.message)
+
     // The prepared solution once; after that, a new challenge (a session reload) each time.
+    // With Altcha on, a request never leaves without its solution.
     private suspend fun takeAltcha(): AltchaSolution? {
         altcha?.let { prepared ->
             altcha = null
-            return prepared.await()
+            return prepared.await() ?: throw AltchaUnavailable(WajubError.of("security_check_failed", lang))
         }
         if (_session.value?.altcha == null) return null
         val challenge = try {
@@ -679,9 +716,10 @@ class CheckoutController internal constructor(
         } catch (e: CancellationException) {
             throw e
         } catch (_: Exception) {
-            null
+            throw AltchaUnavailable(WajubError.of("network_error", lang))
         } ?: return null
         return scope.async(compute) { Altcha.solve(challenge) }.await()
+            ?: throw AltchaUnavailable(WajubError.of("security_check_failed", lang))
     }
 
     private fun family(): String = method?.family ?: "unknown"
@@ -767,9 +805,11 @@ class CheckoutController internal constructor(
                     showFailed(WajubError.of("security_check_failed", lang))
                     return
                 }
-                // A new challenge (taking a solution reloads one), once, then the same payment again.
+                // A new challenge (taking a solution reloads one), once, then the same payment again:
+                // the attempt stays undecided across the reload and the resend.
                 altchaReloaded = true
                 attemptInFlight = true
+                undecided = true
                 resubmit?.invoke()
             }
             // A 422 without a code of its own is the form's: field errors, stay.
@@ -881,24 +921,31 @@ class CheckoutController internal constructor(
             leftForBrowser = false
             clientSessionId?.let { id ->
                 val seq = attemptSeq
-                completing = true
+                completions++
                 scope.launch {
-                    val outcome = session.confirmClientSession(id)
+                    val outcome = try {
+                        session.confirmClientSession(id)
+                    } finally {
+                        completions--
+                    }
                     // An answer for an older attempt, or after the outcome, changes nothing.
                     if (finished || seq != attemptSeq || clientSessionId != id) return@launch
-                    completing = false
                     fire { onAnswer?.invoke(outcome, true) }
                     when (outcome) {
                         is ProcessOutcome.Complete -> success(outcome.transaction, family())
                         is ProcessOutcome.Failed -> {
-                            clientSessionId = null
-                            attemptInFlight = false
+                            // A decline: the payment is `pending` again (the 402's own transaction says so).
+                            refusedForGood(outcome.transaction)
                             showFailed(outcome.error)
                         }
-                        // Not paid yet: a refusal the status held back decides; else the PSP's webhook settles it.
-                        else -> heldFailure?.let {
-                            heldFailure = null
-                            showFailed(it)
+                        // Not paid yet: once no other complete can still say paid, a refusal
+                        // the status held back decides; else the PSP's webhook settles it.
+                        else -> if (completions == 0) {
+                            heldFailure?.let {
+                                heldFailure = null
+                                refusedForGood(null)
+                                showFailed(it)
+                            }
                         }
                     }
                 }
@@ -920,7 +967,12 @@ class CheckoutController internal constructor(
                 val current = _screen.value
                 if (current is SheetScreen.Step && current.stepId == id) {
                     // A code being checked decides first; the timeout fails it if it is refused.
-                    if (current.busy) threeDsExpired = true else showFailed(WajubError.of("3ds_timeout", lang))
+                    if (current.busy) {
+                        threeDsExpired = true
+                    } else {
+                        refusedForGood(null)
+                        showFailed(WajubError.of("3ds_timeout", lang))
+                    }
                 }
             }
         }
@@ -981,6 +1033,7 @@ class CheckoutController internal constructor(
         if (finished || current !is SheetScreen.Step || current.stepId != step.stepId || !current.busy) return
         // The 3-D Secure code expired while it was being checked: a refusal ends it.
         if (step.kind == StepKind.ThreeDs && threeDsExpired && result !is StepResult.Accepted) {
+            refusedForGood(null)
             showFailed(WajubError.of("3ds_timeout", lang))
             return
         }
@@ -1009,6 +1062,8 @@ class CheckoutController internal constructor(
                 val text = result.error.localized(lang, mapOf("n" to (result.attemptsRemaining ?: 0).toString())).message
                 showIfStillOn(step) { it.copy(busy = false, error = text, attemptsRemaining = result.attemptsRemaining, values = emptyMap()) }
             } else {
+                // The step is over (max attempts, expired, 3-D Secure refused): a definitive refusal.
+                refusedForGood(null)
                 showFailed(result.error)
             }
             is StepResult.Invalid -> {
@@ -1060,7 +1115,7 @@ class CheckoutController internal constructor(
             return
         }
         val data = _session.value ?: return
-        val w = session.watcher(data, options.realtime, seenProcessing, clock, random, connector)
+        val w = session.watcher(data, options.realtime, seenProcessing, clock, random, connector, attemptStartedAt)
         watcher = w
         watchJob = scope.launch { w.events().collect { onWatchEvent(it) } }
     }
@@ -1104,6 +1159,16 @@ class CheckoutController internal constructor(
             is WatchEvent.StatusChanged -> {
                 lastSeen = event.status
                 event.status.errorCode?.let { knownErrorCode = it }
+                // A request without an answer, then a new refusal on the payment: it arrived and was
+                // refused. One the payment already carried before this attempt is not news.
+                val code = event.status.errorCode
+                if (unansweredKey != null && !sawProcessing && event.status.status == "pending" &&
+                    code != null && code != errorCodeBeforeAttempt && _screen.value is SheetScreen.Pending
+                ) {
+                    lastTransaction = lastTransaction?.copy(status = "pending", errorCode = code)
+                    showFailed(PaymentWatcher.attemptEnded(event.status, lang))
+                    return
+                }
                 if (event.status.status in setOf("processing", "partial")) {
                     sawProcessing = true
                     // It arrived: a later Pay is a new attempt, with a new key.
@@ -1117,7 +1182,7 @@ class CheckoutController internal constructor(
                 event.error.declineCode?.let { knownErrorCode = it }
                 event.status?.let { lastTransaction = lastTransaction?.copy(status = it.status) }
                 // While a client session completes, its answer decides (a success wins).
-                if (completing && event.status?.status == "pending") heldFailure = event.error else showFailed(event.error)
+                if (completions > 0 && event.status?.status == "pending") heldFailure = event.error else showFailed(event.error)
             }
             is WatchEvent.Cancelled -> showEnded(SheetScreen.Cancelled(event.error))
             is WatchEvent.Expired -> showEnded(SheetScreen.Expired(event.error))
@@ -1148,6 +1213,16 @@ class CheckoutController internal constructor(
                 finish(CheckoutResult.Complete(payment, t))
             }
         }
+    }
+
+    // A definitive refusal (a step over, a 3-D Secure refused or timed out, a client-session
+    // decline): the payment is `pending` again, and can be cancelled.
+    private fun refusedForGood(txn: SessionTransaction?) {
+        attemptInFlight = false
+        undecided = false
+        // Only the status is taken from a refusal's (often partial) transaction.
+        val status = txn?.status?.takeIf { it.isNotBlank() } ?: "pending"
+        lastTransaction = lastTransaction?.copy(status = status) ?: txn
     }
 
     private fun showFailed(error: WajubError, retryAt: Long? = null) {
@@ -1267,7 +1342,9 @@ class CheckoutController internal constructor(
             finish(it)
             return
         }
-        if (attemptInFlight || current is SheetScreen.Form && current.busy) {
+        val underWay = _session.value?.transaction?.status?.lowercase() in setOf("processing", "partial") &&
+            lastTransaction?.status?.lowercase() != "pending"
+        if (attemptInFlight || underWay || current is SheetScreen.Form && current.busy) {
             finish(CheckoutResult.Processing(lastTransaction))
         } else {
             finish(CheckoutResult.Cancelled(CancelReason.HostGone, null))

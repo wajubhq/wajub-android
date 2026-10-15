@@ -49,6 +49,7 @@ data class RawTransaction(
     val createdAt: String? = null,
     val updatedAt: String? = null,
     val terminalAt: String? = null,
+    val errorCode: String? = null,
 ) {
     /** The 1.2 constructor, for Java and code compiled against 1.2. */
     constructor(
@@ -70,7 +71,58 @@ data class RawTransaction(
 
     fun toModel(): SessionTransaction = PaymentMapper.mapTransaction(this)
 
+    /**
+     * The 1.2 `copy`, for Java and code compiled against 1.2. It keeps the
+     * fields 1.3 added; Kotlin code names the arguments it changes instead.
+     */
+    fun copy(
+        id: String,
+        reference: String,
+        trxref: String?,
+        amount: Double,
+        amountTotal: Double?,
+        currency: String,
+        status: String,
+        statusLabel: String?,
+        sandbox: Boolean,
+        description: String?,
+        processingContext: RawProcessingContext?,
+    ): RawTransaction = copy(id = id, reference = reference, trxref = trxref, amount = amount, amountTotal = amountTotal, currency = currency, status = status, statusLabel = statusLabel, sandbox = sandbox, description = description, processingContext = processingContext, amountCollected = amountCollected)
+
     companion object {
+        // What code compiled against 1.2 calls for `copy(name = …)`: the 1.2 `copy$default`.
+        @JvmStatic
+        @JvmName("copy\$default")
+        @Deprecated("Binary compatibility with 1.2.", level = DeprecationLevel.HIDDEN)
+        fun copy12(
+            self: RawTransaction,
+            id: String?,
+            reference: String?,
+            trxref: String?,
+            amount: Double,
+            amountTotal: Double?,
+            currency: String?,
+            status: String?,
+            statusLabel: String?,
+            sandbox: Boolean,
+            description: String?,
+            processingContext: RawProcessingContext?,
+            mask: Int,
+            @Suppress("UNUSED_PARAMETER") marker: Any?,
+        ): RawTransaction = self.copy(
+                id = if (mask and 1 != 0) self.id else id!!,
+                reference = if (mask and 2 != 0) self.reference else reference!!,
+                trxref = if (mask and 4 != 0) self.trxref else trxref,
+                amount = if (mask and 8 != 0) self.amount else amount,
+                amountTotal = if (mask and 16 != 0) self.amountTotal else amountTotal,
+                currency = if (mask and 32 != 0) self.currency else currency!!,
+                status = if (mask and 64 != 0) self.status else status!!,
+                statusLabel = if (mask and 128 != 0) self.statusLabel else statusLabel,
+                sandbox = if (mask and 256 != 0) self.sandbox else sandbox,
+                description = if (mask and 512 != 0) self.description else description,
+                processingContext = if (mask and 1024 != 0) self.processingContext else processingContext,
+            )
+
         fun fromJson(obj: JSONObject): RawTransaction {
             val id = obj.str("id") ?: obj.str("reference").orEmpty()
             return RawTransaction(
@@ -98,6 +150,7 @@ data class RawTransaction(
                 createdAt = obj.str("created_at"),
                 updatedAt = obj.str("updated_at"),
                 terminalAt = obj.str("terminal_at"),
+                errorCode = obj.str("error_code"),
             )
         }
     }
@@ -129,7 +182,37 @@ data class RawProcessingContext(
             threeDsId, threeDsMethod, maskedEmail, threeDsTimeout,
         )
 
+    /**
+     * The 1.2 `copy`, for Java and code compiled against 1.2. It keeps the
+     * fields 1.3 added; Kotlin code names the arguments it changes instead.
+     */
+    fun copy(
+        channelSlug: String?,
+        isMobileMoney: Boolean,
+        payerInstruction: String?,
+        actionUrl: String?,
+    ): RawProcessingContext = copy(channelSlug = channelSlug, isMobileMoney = isMobileMoney, payerInstruction = payerInstruction, actionUrl = actionUrl, isUssd = isUssd)
+
     companion object {
+        // What code compiled against 1.2 calls for `copy(name = …)`: the 1.2 `copy$default`.
+        @JvmStatic
+        @JvmName("copy\$default")
+        @Deprecated("Binary compatibility with 1.2.", level = DeprecationLevel.HIDDEN)
+        fun copy12(
+            self: RawProcessingContext,
+            channelSlug: String?,
+            isMobileMoney: Boolean,
+            payerInstruction: String?,
+            actionUrl: String?,
+            mask: Int,
+            @Suppress("UNUSED_PARAMETER") marker: Any?,
+        ): RawProcessingContext = self.copy(
+                channelSlug = if (mask and 1 != 0) self.channelSlug else channelSlug,
+                isMobileMoney = if (mask and 2 != 0) self.isMobileMoney else isMobileMoney,
+                payerInstruction = if (mask and 4 != 0) self.payerInstruction else payerInstruction,
+                actionUrl = if (mask and 8 != 0) self.actionUrl else actionUrl,
+            )
+
         fun fromJson(obj: JSONObject): RawProcessingContext =
             RawProcessingContext(
                 channelSlug = obj.str("channel_slug"),
@@ -176,7 +259,55 @@ data class RawChannel(
     fun toModel(): SessionChannel =
         SessionChannel(id, slug, name, nameFr, type, logo, countries, minAmount, maxAmount, currency, operators)
 
+    /**
+     * The 1.2 `copy`, for Java and code compiled against 1.2. It keeps the
+     * fields 1.3 added; Kotlin code names the arguments it changes instead.
+     */
+    fun copy(
+        id: String,
+        slug: String,
+        name: String,
+        nameFr: String?,
+        type: String,
+        logo: String?,
+        countries: List<String>,
+        minAmount: Double?,
+        maxAmount: Double?,
+        currency: String,
+    ): RawChannel = copy(id = id, slug = slug, name = name, nameFr = nameFr, type = type, logo = logo, countries = countries, minAmount = minAmount, maxAmount = maxAmount, currency = currency, operators = operators)
+
     companion object {
+        // What code compiled against 1.2 calls for `copy(name = …)`: the 1.2 `copy$default`.
+        @JvmStatic
+        @JvmName("copy\$default")
+        @Deprecated("Binary compatibility with 1.2.", level = DeprecationLevel.HIDDEN)
+        fun copy12(
+            self: RawChannel,
+            id: String?,
+            slug: String?,
+            name: String?,
+            nameFr: String?,
+            type: String?,
+            logo: String?,
+            countries: List<String>?,
+            minAmount: Double?,
+            maxAmount: Double?,
+            currency: String?,
+            mask: Int,
+            @Suppress("UNUSED_PARAMETER") marker: Any?,
+        ): RawChannel = self.copy(
+                id = if (mask and 1 != 0) self.id else id!!,
+                slug = if (mask and 2 != 0) self.slug else slug!!,
+                name = if (mask and 4 != 0) self.name else name!!,
+                nameFr = if (mask and 8 != 0) self.nameFr else nameFr,
+                type = if (mask and 16 != 0) self.type else type!!,
+                logo = if (mask and 32 != 0) self.logo else logo,
+                countries = if (mask and 64 != 0) self.countries else countries!!,
+                minAmount = if (mask and 128 != 0) self.minAmount else minAmount,
+                maxAmount = if (mask and 256 != 0) self.maxAmount else maxAmount,
+                currency = if (mask and 512 != 0) self.currency else currency!!,
+            )
+
         fun fromJson(obj: JSONObject): RawChannel {
             val slug = obj.str("slug") ?: obj.str("id").orEmpty()
             return RawChannel(
@@ -272,7 +403,43 @@ data class RawSessionResponse(
             features = features,
         )
 
+    /**
+     * The 1.2 `copy`, for Java and code compiled against 1.2. It keeps the
+     * fields 1.3 added; Kotlin code names the arguments it changes instead.
+     */
+    fun copy(
+        transaction: RawTransaction,
+        channels: List<RawChannel>,
+        locale: String?,
+        branding: Map<String, String?>,
+        echo: RawEchoConfig?,
+        callback: String?,
+    ): RawSessionResponse = copy(transaction = transaction, channels = channels, locale = locale, branding = branding, echo = echo, callback = callback, brand = brand)
+
     companion object {
+        // What code compiled against 1.2 calls for `copy(name = …)`: the 1.2 `copy$default`.
+        @JvmStatic
+        @JvmName("copy\$default")
+        @Deprecated("Binary compatibility with 1.2.", level = DeprecationLevel.HIDDEN)
+        fun copy12(
+            self: RawSessionResponse,
+            transaction: RawTransaction?,
+            channels: List<RawChannel>?,
+            locale: String?,
+            branding: Map<String, String?>?,
+            echo: RawEchoConfig?,
+            callback: String?,
+            mask: Int,
+            @Suppress("UNUSED_PARAMETER") marker: Any?,
+        ): RawSessionResponse = self.copy(
+                transaction = if (mask and 1 != 0) self.transaction else transaction!!,
+                channels = if (mask and 2 != 0) self.channels else channels!!,
+                locale = if (mask and 4 != 0) self.locale else locale,
+                branding = if (mask and 8 != 0) self.branding else branding!!,
+                echo = if (mask and 16 != 0) self.echo else echo,
+                callback = if (mask and 32 != 0) self.callback else callback,
+            )
+
         fun fromJson(body: JSONObject): RawSessionResponse {
             val txn = body.obj("transaction") ?: throw JSONException("session without a transaction")
             val brandingJson = body.obj("branding") ?: JSONObject()
@@ -418,7 +585,49 @@ data class RawProcessResponse(
         clientSession: RawClientSession? = null,
     ) : this(code, status, message, action, transaction, confirmUrl, simulatorUrl, clientSession, threeDsId = null)
 
+    /**
+     * The 1.2 `copy`, for Java and code compiled against 1.2. It keeps the
+     * fields 1.3 added; Kotlin code names the arguments it changes instead.
+     */
+    fun copy(
+        code: Int,
+        status: String,
+        message: String,
+        action: String?,
+        transaction: RawTransaction?,
+        confirmUrl: String?,
+        simulatorUrl: String?,
+        clientSession: RawClientSession?,
+    ): RawProcessResponse = copy(code = code, status = status, message = message, action = action, transaction = transaction, confirmUrl = confirmUrl, simulatorUrl = simulatorUrl, clientSession = clientSession, threeDsId = threeDsId)
+
     companion object {
+        // What code compiled against 1.2 calls for `copy(name = …)`: the 1.2 `copy$default`.
+        @JvmStatic
+        @JvmName("copy\$default")
+        @Deprecated("Binary compatibility with 1.2.", level = DeprecationLevel.HIDDEN)
+        fun copy12(
+            self: RawProcessResponse,
+            code: Int,
+            status: String?,
+            message: String?,
+            action: String?,
+            transaction: RawTransaction?,
+            confirmUrl: String?,
+            simulatorUrl: String?,
+            clientSession: RawClientSession?,
+            mask: Int,
+            @Suppress("UNUSED_PARAMETER") marker: Any?,
+        ): RawProcessResponse = self.copy(
+                code = if (mask and 1 != 0) self.code else code,
+                status = if (mask and 2 != 0) self.status else status!!,
+                message = if (mask and 4 != 0) self.message else message!!,
+                action = if (mask and 8 != 0) self.action else action,
+                transaction = if (mask and 16 != 0) self.transaction else transaction,
+                confirmUrl = if (mask and 32 != 0) self.confirmUrl else confirmUrl,
+                simulatorUrl = if (mask and 64 != 0) self.simulatorUrl else simulatorUrl,
+                clientSession = if (mask and 128 != 0) self.clientSession else clientSession,
+            )
+
         fun fromJson(body: JSONObject): RawProcessResponse =
             RawProcessResponse(
                 code = body.int("code") ?: 0,
@@ -591,6 +800,7 @@ object PaymentMapper {
             createdAt = raw.createdAt,
             updatedAt = raw.updatedAt,
             terminalAt = raw.terminalAt,
+            errorCode = raw.errorCode,
         )
 
     fun mapStatusToResult(status: String, transaction: SessionTransaction): PaymentResult {

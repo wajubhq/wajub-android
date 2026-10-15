@@ -32,6 +32,8 @@ data class SessionTransaction(
     val createdAt: String? = null,
     val updatedAt: String? = null,
     val terminalAt: String? = null,
+    /** The last refusal of an attempt (`insufficient_funds`…) while the payment is back to `pending`. */
+    val errorCode: String? = null,
 ) {
     /** The 1.2 constructor, for Java and code compiled against 1.2. */
     constructor(
@@ -53,6 +55,59 @@ data class SessionTransaction(
 
     /** The amount to show and charge: [amountTotal], else [amount]. */
     val payableAmount: Double get() = amountTotal ?: amount
+
+    /**
+     * The 1.2 `copy`, for Java and code compiled against 1.2. It keeps the
+     * fields 1.3 added; Kotlin code names the arguments it changes instead.
+     */
+    fun copy(
+        id: String,
+        reference: String,
+        trxref: String?,
+        amount: Double,
+        amountTotal: Double?,
+        currency: String,
+        status: String,
+        statusLabel: String?,
+        sandbox: Boolean,
+        description: String?,
+        processingContext: ProcessingContext?,
+    ): SessionTransaction = copy(id = id, reference = reference, trxref = trxref, amount = amount, amountTotal = amountTotal, currency = currency, status = status, statusLabel = statusLabel, sandbox = sandbox, description = description, processingContext = processingContext, amountCollected = amountCollected)
+
+    companion object {
+        // What code compiled against 1.2 calls for `copy(name = …)`: the 1.2 `copy$default`.
+        @JvmStatic
+        @JvmName("copy\$default")
+        @Deprecated("Binary compatibility with 1.2.", level = DeprecationLevel.HIDDEN)
+        fun copy12(
+            self: SessionTransaction,
+            id: String?,
+            reference: String?,
+            trxref: String?,
+            amount: Double,
+            amountTotal: Double?,
+            currency: String?,
+            status: String?,
+            statusLabel: String?,
+            sandbox: Boolean,
+            description: String?,
+            processingContext: ProcessingContext?,
+            mask: Int,
+            @Suppress("UNUSED_PARAMETER") marker: Any?,
+        ): SessionTransaction = self.copy(
+                id = if (mask and 1 != 0) self.id else id!!,
+                reference = if (mask and 2 != 0) self.reference else reference!!,
+                trxref = if (mask and 4 != 0) self.trxref else trxref,
+                amount = if (mask and 8 != 0) self.amount else amount,
+                amountTotal = if (mask and 16 != 0) self.amountTotal else amountTotal,
+                currency = if (mask and 32 != 0) self.currency else currency!!,
+                status = if (mask and 64 != 0) self.status else status!!,
+                statusLabel = if (mask and 128 != 0) self.statusLabel else statusLabel,
+                sandbox = if (mask and 256 != 0) self.sandbox else sandbox,
+                description = if (mask and 512 != 0) self.description else description,
+                processingContext = if (mask and 1024 != 0) self.processingContext else processingContext,
+            )
+    }
 }
 
 data class TransactionFee(
@@ -91,6 +146,38 @@ data class ProcessingContext(
         payerInstruction: String? = null,
         actionUrl: String? = null,
     ) : this(channelSlug, isMobileMoney, payerInstruction, actionUrl, isUssd = false)
+
+    /**
+     * The 1.2 `copy`, for Java and code compiled against 1.2. It keeps the
+     * fields 1.3 added; Kotlin code names the arguments it changes instead.
+     */
+    fun copy(
+        channelSlug: String?,
+        isMobileMoney: Boolean,
+        payerInstruction: String?,
+        actionUrl: String?,
+    ): ProcessingContext = copy(channelSlug = channelSlug, isMobileMoney = isMobileMoney, payerInstruction = payerInstruction, actionUrl = actionUrl, isUssd = isUssd)
+
+    companion object {
+        // What code compiled against 1.2 calls for `copy(name = …)`: the 1.2 `copy$default`.
+        @JvmStatic
+        @JvmName("copy\$default")
+        @Deprecated("Binary compatibility with 1.2.", level = DeprecationLevel.HIDDEN)
+        fun copy12(
+            self: ProcessingContext,
+            channelSlug: String?,
+            isMobileMoney: Boolean,
+            payerInstruction: String?,
+            actionUrl: String?,
+            mask: Int,
+            @Suppress("UNUSED_PARAMETER") marker: Any?,
+        ): ProcessingContext = self.copy(
+                channelSlug = if (mask and 1 != 0) self.channelSlug else channelSlug,
+                isMobileMoney = if (mask and 2 != 0) self.isMobileMoney else isMobileMoney,
+                payerInstruction = if (mask and 4 != 0) self.payerInstruction else payerInstruction,
+                actionUrl = if (mask and 8 != 0) self.actionUrl else actionUrl,
+            )
+    }
 }
 
 data class SessionChannel(
@@ -122,6 +209,56 @@ data class SessionChannel(
         maxAmount: Double? = null,
         currency: String,
     ) : this(id, slug, name, nameFr, type, logo, countries, minAmount, maxAmount, currency, operators = emptyList())
+
+    /**
+     * The 1.2 `copy`, for Java and code compiled against 1.2. It keeps the
+     * fields 1.3 added; Kotlin code names the arguments it changes instead.
+     */
+    fun copy(
+        id: String,
+        slug: String,
+        name: String,
+        nameFr: String?,
+        type: String,
+        logo: String?,
+        countries: List<String>,
+        minAmount: Double?,
+        maxAmount: Double?,
+        currency: String,
+    ): SessionChannel = copy(id = id, slug = slug, name = name, nameFr = nameFr, type = type, logo = logo, countries = countries, minAmount = minAmount, maxAmount = maxAmount, currency = currency, operators = operators)
+
+    companion object {
+        // What code compiled against 1.2 calls for `copy(name = …)`: the 1.2 `copy$default`.
+        @JvmStatic
+        @JvmName("copy\$default")
+        @Deprecated("Binary compatibility with 1.2.", level = DeprecationLevel.HIDDEN)
+        fun copy12(
+            self: SessionChannel,
+            id: String?,
+            slug: String?,
+            name: String?,
+            nameFr: String?,
+            type: String?,
+            logo: String?,
+            countries: List<String>?,
+            minAmount: Double?,
+            maxAmount: Double?,
+            currency: String?,
+            mask: Int,
+            @Suppress("UNUSED_PARAMETER") marker: Any?,
+        ): SessionChannel = self.copy(
+                id = if (mask and 1 != 0) self.id else id!!,
+                slug = if (mask and 2 != 0) self.slug else slug!!,
+                name = if (mask and 4 != 0) self.name else name!!,
+                nameFr = if (mask and 8 != 0) self.nameFr else nameFr,
+                type = if (mask and 16 != 0) self.type else type!!,
+                logo = if (mask and 32 != 0) self.logo else logo,
+                countries = if (mask and 64 != 0) self.countries else countries!!,
+                minAmount = if (mask and 128 != 0) self.minAmount else minAmount,
+                maxAmount = if (mask and 256 != 0) self.maxAmount else maxAmount,
+                currency = if (mask and 512 != 0) self.currency else currency!!,
+            )
+    }
 }
 
 /** One member of an aggregate channel. */
@@ -178,6 +315,44 @@ data class SessionData(
         echo: EchoConfig? = null,
         callback: String? = null,
     ) : this(transaction, channels, locale, branding, echo, callback, sessionLocale = null)
+
+    /**
+     * The 1.2 `copy`, for Java and code compiled against 1.2. It keeps the
+     * fields 1.3 added; Kotlin code names the arguments it changes instead.
+     */
+    fun copy(
+        transaction: SessionTransaction,
+        channels: List<SessionChannel>,
+        locale: String,
+        branding: Map<String, String?>,
+        echo: EchoConfig?,
+        callback: String?,
+    ): SessionData = copy(transaction = transaction, channels = channels, locale = locale, branding = branding, echo = echo, callback = callback, sessionLocale = sessionLocale)
+
+    companion object {
+        // What code compiled against 1.2 calls for `copy(name = …)`: the 1.2 `copy$default`.
+        @JvmStatic
+        @JvmName("copy\$default")
+        @Deprecated("Binary compatibility with 1.2.", level = DeprecationLevel.HIDDEN)
+        fun copy12(
+            self: SessionData,
+            transaction: SessionTransaction?,
+            channels: List<SessionChannel>?,
+            locale: String?,
+            branding: Map<String, String?>?,
+            echo: EchoConfig?,
+            callback: String?,
+            mask: Int,
+            @Suppress("UNUSED_PARAMETER") marker: Any?,
+        ): SessionData = self.copy(
+                transaction = if (mask and 1 != 0) self.transaction else transaction!!,
+                channels = if (mask and 2 != 0) self.channels else channels!!,
+                locale = if (mask and 4 != 0) self.locale else locale!!,
+                branding = if (mask and 8 != 0) self.branding else branding!!,
+                echo = if (mask and 16 != 0) self.echo else echo,
+                callback = if (mask and 32 != 0) self.callback else callback,
+            )
+    }
 }
 
 /**
@@ -296,6 +471,35 @@ data class MobileMoneyInput(
 ) {
     /** The 1.2 constructor, for Java and code compiled against 1.2. */
     constructor(channelSlug: String, phone: String, country: String) : this(channelSlug, phone, country, operator = null)
+
+    /**
+     * The 1.2 `copy`, for Java and code compiled against 1.2. It keeps the
+     * fields 1.3 added; Kotlin code names the arguments it changes instead.
+     */
+    fun copy(
+        channelSlug: String,
+        phone: String,
+        country: String,
+    ): MobileMoneyInput = copy(channelSlug = channelSlug, phone = phone, country = country, operator = operator)
+
+    companion object {
+        // What code compiled against 1.2 calls for `copy(name = …)`: the 1.2 `copy$default`.
+        @JvmStatic
+        @JvmName("copy\$default")
+        @Deprecated("Binary compatibility with 1.2.", level = DeprecationLevel.HIDDEN)
+        fun copy12(
+            self: MobileMoneyInput,
+            channelSlug: String?,
+            phone: String?,
+            country: String?,
+            mask: Int,
+            @Suppress("UNUSED_PARAMETER") marker: Any?,
+        ): MobileMoneyInput = self.copy(
+                channelSlug = if (mask and 1 != 0) self.channelSlug else channelSlug!!,
+                phone = if (mask and 2 != 0) self.phone else phone!!,
+                country = if (mask and 4 != 0) self.country else country!!,
+            )
+    }
 }
 
 /** `GET /pay/status`, and the data of the realtime `PaymentStatusUpdated` event. */

@@ -206,12 +206,15 @@ class RealtimeSubscriberTest {
         val results = watch()
         awaitSubscription()
 
+        // The first poll's answer (on a loaded machine it can come after the subscription).
+        val first = withTimeout(10_000) { results.receive() }
+
         // Connected and subscribed, and the socket says nothing: the payment
         // succeeds and only `/pay/session` knows.
         status.set("succeeded")
 
         withTimeout(10_000) {
-            val seen = mutableListOf<PaymentResult>()
+            val seen = mutableListOf(first)
             for (result in results) seen += result
             assertEquals(2, seen.size, "one result per status: $seen")
             assertIs<PaymentResult.Processing>(seen[0])

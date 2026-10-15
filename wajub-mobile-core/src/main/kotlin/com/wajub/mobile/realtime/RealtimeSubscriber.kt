@@ -39,6 +39,7 @@ class RealtimeSubscriber(
             schedule = PollSchedule.fixed(intervalMs),
             authUrl = authEndpoint,
             authHeaders = mapOf("Authorization" to "Bearer $token"),
+            legacyErrors = true,
         )
         return watcher.events().toPaymentResults(transaction)
     }
