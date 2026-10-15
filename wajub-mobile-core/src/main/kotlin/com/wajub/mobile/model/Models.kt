@@ -198,7 +198,7 @@ data class SessionChannel(
     val currency: String,
     /** The operators an aggregate channel (`cm.mobile`) folds; empty otherwise. */
     val operators: List<ChannelOperator> = emptyList(),
-    /** The logo as a PNG (`logo` is mostly an SVG), when there is one. */
+    /** The logo as a PNG, when there is one. */
     val logoPng: String? = null,
 ) {
     /** The earlier constructor, kept for Java and compiled code. */
@@ -281,7 +281,6 @@ data class ChannelOperator(
 data class EchoConfig(
     /** Empty when there is none. */
     val key: String,
-    /** With its scheme: `wss://ws.wajub.com` (TLS) or `ws://…` (plain). */
     val wsHost: String,
     val wsPort: Int,
     val channelPrefix: String,

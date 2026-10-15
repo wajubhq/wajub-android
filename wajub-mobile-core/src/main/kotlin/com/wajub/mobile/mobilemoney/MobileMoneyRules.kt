@@ -19,7 +19,7 @@ data class OperatorChoice(
     /** The channel's `min_amount` / `max_amount`. */
     val minAmount: Double? = null,
     val maxAmount: Double? = null,
-    /** The logo as a PNG: drawn when [logo] does not load. */
+    /** The logo as a PNG, when there is one. */
     val logoPng: String? = null,
 )
 

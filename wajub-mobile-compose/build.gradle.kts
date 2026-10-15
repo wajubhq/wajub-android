@@ -85,7 +85,7 @@ mavenPublishing {
 
     pom {
         name.set("wajub-mobile-compose")
-        description.set("Jetpack Compose PaymentSheet for the Wajub Android checkout SDK.")
+        description.set("Jetpack Compose payment sheet of the Wajub Android payment SDK.")
         url.set("https://docs.wajub.com/libraries/sdks/mobile")
         licenses {
             license {

@@ -54,7 +54,7 @@ data class PaymentMethod(
     /** Shown disabled when the amount is outside these limits. */
     val minAmount: Double? = null,
     val maxAmount: Double? = null,
-    /** The logo as a PNG: drawn when [logo] does not load. */
+    /** The logo as a PNG, when there is one. */
     val logoPng: String? = null,
 ) {
     val slug: String get() = channels.first().slug

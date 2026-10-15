@@ -186,32 +186,7 @@ PresentOptions(
 
 `CheckoutController`, in `wajub-mobile-core`, is the whole payment sheet without its UI: it runs the payment, fires the same callbacks and ends with the same `CheckoutResult`, while you draw the screens from its `screen` flow and forward the payer's actions (`selectMethod`, `setPhone`, `payMobileMoney`, `payCard`, `submitStep`, `tryAgain`, `cancelPayment`, `dismiss`…). Call `onReturn()` when your app is resumed and `hostGone()` when your screen goes away for good.
 
-`WajubSession` is the lower-level client of one payment:
-
-```kotlin
-val session = WajubMobile.createSession(authorizationToken)
-val data = session.loadSession()                    // amount, channels, branding…
-val config = session.getSdkConfig()
-
-val outcome = session.process(
-    ProcessRequest("cm.mobile", mapOf("phone" to "+237677123456", "country" to "CM", "operator" to "mtn")),
-)
-when (outcome) {
-    is ProcessOutcome.Complete -> Unit
-    is ProcessOutcome.Processing -> Unit                                  // kind: Approval, Ussd, Pending — watch
-    is ProcessOutcome.RequiresAction -> Unit                              // a page (url) or a step (step, stepId)
-    is ProcessOutcome.Failed -> showError(outcome.error.message)
-}
-
-session.watch().events().collect { event ->                              // StatusChanged, Succeeded, Failed, Cancelled, Expired, StillProcessing
-}
-```
-
-- `process(ProcessRequest)` answers with a `ProcessOutcome`. `Processing` without a transaction means the outcome is not known yet: watch, never show a failure.
-- `openClientSession(fields, returnUrl)` and `confirmClientSession(id)`: a card paid on the provider's page.
-- `verifyStep(kind, stepId, values)` and `resendStep(kind, stepId)`: the confirmation steps. A `StepResult.Accepted` whose `next` is set asks for another step or a page.
-- `status()`, `cancel()`, `watch()`.
-- `MobileMoney` checks, formats and reads a number (`isValid`, `formatAsYouType`, `detectOperator`), and `data()` gives the countries and their dial codes.
+`WajubSession`, from `WajubMobile.createSession(token)`, is the lower-level client of one payment, and `MobileMoney` checks, formats and reads a Mobile Money number. Their functions are described in the API reference that comes with the artifacts (your IDE shows it) and on [Your own UI](https://docs.wajub.com/libraries/sdks/kotlin#your-own-ui).
 
 An app that uses only `wajub-mobile-core` on Android sets `WajubMobile.device` once at start-up (see `DeviceEnvironment`); `wajub-mobile-compose` does it for you.
 

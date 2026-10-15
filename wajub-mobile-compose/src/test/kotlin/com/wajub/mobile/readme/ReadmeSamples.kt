@@ -16,8 +16,6 @@ import com.wajub.mobile.checkout.CheckoutCallbacks
 import com.wajub.mobile.checkout.CheckoutResult
 import com.wajub.mobile.checkout.PaymentSuccess
 import com.wajub.mobile.checkout.PresentOptions
-import com.wajub.mobile.model.ProcessOutcome
-import com.wajub.mobile.model.ProcessRequest
 import com.wajub.mobile.ui.PaymentSheet
 import com.wajub.mobile.ui.WajubFonts
 import okhttp3.OkHttpClient
@@ -99,23 +97,4 @@ internal fun appearance() =
 
 internal fun fonts() {
     WajubFonts.register("Poppins", FontFamily(Font(R.font.poppins_regular), Font(R.font.poppins_semibold, FontWeight.SemiBold)))
-}
-
-internal suspend fun ownUi() {
-    val session = WajubMobile.createSession(authorizationToken)
-    val data = session.loadSession()                    // amount, channels, branding…
-    val config = session.getSdkConfig()
-
-    val outcome = session.process(
-        ProcessRequest("cm.mobile", mapOf("phone" to "+237677123456", "country" to "CM", "operator" to "mtn")),
-    )
-    when (outcome) {
-        is ProcessOutcome.Complete -> Unit
-        is ProcessOutcome.Processing -> Unit                                  // kind: Approval, Ussd, Pending — watch
-        is ProcessOutcome.RequiresAction -> Unit                              // a page (url) or a step (step, stepId)
-        is ProcessOutcome.Failed -> showError(outcome.error.message)
-    }
-
-    session.watch().events().collect { event ->                              // StatusChanged, Succeeded, Failed, Cancelled, Expired, StillProcessing
-    }
 }

@@ -17,7 +17,7 @@ class ReadmeSamplesTest {
             // The Gradle snippet is build script, not app code.
             .filterNot { "implementation(\"com.wajub" in it }
             .toList()
-        assertTrue(blocks.size >= 6, "found ${blocks.size} samples")
+        assertTrue(blocks.size >= 5, "found ${blocks.size} samples")
         for (block in blocks) {
             for (line in block.lines().map(::normalize).filter { it.isNotEmpty() }) {
                 assertTrue(line in samples, "README line not in ReadmeSamples.kt: $line")

@@ -8,10 +8,7 @@ data class ProcessRequest(
     val channel: String,
     /** What the payer entered (`phone`, `country`, `operator`…). */
     val data: Map<String, Any?> = emptyMap(),
-    /**
-     * Identifies this attempt: one per press of Pay. Sending the same request
-     * again with the same key never charges twice.
-     */
+    /** Pass the same key to retry the same payment. */
     val idempotencyKey: String = UUID.randomUUID().toString(),
 )
 
@@ -41,11 +38,7 @@ sealed class ProcessOutcome {
         /** The provider's instruction for the payer, in English. */
         val instruction: String? = null,
         val kind: ProcessingKind = ProcessingKind.Pending,
-        /**
-         * When no answer came back at all: the clock time (ms) of the last try.
-         * A payment still pending a minute later most likely never received the
-         * request: pay again with the same [ProcessRequest.idempotencyKey].
-         */
+        /** When no answer came back at all: the clock time (ms) of the last try. */
         val unansweredSince: Long? = null,
     ) : ProcessOutcome()
 

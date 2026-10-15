@@ -60,9 +60,8 @@
   forever; a new value is emitted only when the result changes; a refunded payment ends the flow with
   `Complete`.
 - `SessionChannel.nameFr` holds the channel's French name; it was always `null`. A channel without
-  limits has `null` `minAmount`/`maxAmount` (was `NaN`), a payment without a language has
-  `SessionData.locale` `"en"` (was the text `"null"`), and `EchoConfig.key` is empty when there is
-  none (was the text `"null"`).
+  limits has `null` `minAmount`/`maxAmount` (was `NaN`), and a payment without a language has
+  `SessionData.locale` `"en"` (was the text `"null"`).
 - Compatibility: code written for 1.2.1 still compiles and runs, from Kotlin and from Java, including
   the 1.2.1 constructors and `copy` of the model classes. `PresentOptions.toString()` never prints the
   session token.

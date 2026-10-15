@@ -809,7 +809,11 @@ class CheckoutController internal constructor(
         attemptInFlight = false
         // A refusal is definitive; an action the sheet cannot take came in a 2xx: still under way.
         undecided = error.code == UNSUPPORTED_ACTION_CODE
-        error.declineCode?.let { knownErrorCode = it }
+        error.declineCode?.let {
+            // The refusal now on the payment: known, the baseline of the next attempt.
+            knownErrorCode = it
+            errorCodeKnown = true
+        }
         txn?.let { lastTransaction = it }
         when {
             error.httpStatus == 422 && altchaRefused(error) -> {

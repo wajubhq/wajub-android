@@ -270,6 +270,28 @@ class LoadingContractTest {
         assertEquals("Connection error. Check your network.", assertIs<SheetScreen.Form>(blind.screen.value).banner)
         assertTrue(blindEvents.events.none { it == "error:insufficient_funds" }, "${blindEvents.events}")
 
+        // Unknown at load, then a decline in this sheet: that decline is the baseline of the next attempt,
+        // so a new code after an unanswered attempt is its refusal, not a connection problem.
+        val declined = FakeApi()
+            .on("GET /pay/session", Fixtures.response("session-pending-after-refusal") { it.getJSONObject("transaction").remove("error_code") })
+            .on("GET /pay/sdk-config", Fixtures.response("sdk-config-sandbox"))
+            .on("POST /pay/process", Fixtures.response("process-402-insufficient-funds-sandbox"), FakeResponse.timeout())
+            .on("GET /pay/status", Fixtures.response("status-pending-attempt-refused") { it.getJSONObject("transaction").put("error_code", "expired_card") })
+        val (again, againEvents) = checkout(declined)
+        again.start()
+        runCurrent()
+        again.selectMethod("mobile_money")
+        again.setPhone("670000000")
+        again.payMobileMoney()
+        runCurrent()
+        assertEquals("insufficient_funds", assertIs<SheetScreen.Failed>(again.screen.value).error.code)
+        again.tryAgain()
+        again.payMobileMoney()
+        advanceTimeBy(5_000)
+        runCurrent()
+        assertEquals("expired_card", assertIs<SheetScreen.Failed>(again.screen.value).error.code)
+        assertTrue(againEvents.events.none { it == "error:network_error" }, "${againEvents.events}")
+
         // `null` with the key present: no refusal, so a code the status then shows is this attempt's.
         val none = FakeApi()
             .on("GET /pay/session", Fixtures.response("session-pending-after-refusal") { it.getJSONObject("transaction").put("error_code", JSONObject.NULL) })
