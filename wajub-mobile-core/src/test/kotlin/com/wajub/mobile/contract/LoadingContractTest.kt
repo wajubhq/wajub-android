@@ -10,6 +10,7 @@ import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.test.advanceTimeBy
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import org.json.JSONObject
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -247,6 +248,43 @@ class LoadingContractTest {
         advanceTimeBy(5_000)
         runCurrent()
         assertEquals("expired_card", assertIs<SheetScreen.Failed>(refused.screen.value).error.code)
+
+        // A session that leaves `error_code` out (an older API): the refusal left on the payment is
+        // unknown, so a code the status shows is not taken for this attempt's answer — the 60 s rule decides.
+        val unknown = FakeApi()
+            .on("GET /pay/session", Fixtures.response("session-pending-after-refusal") { it.getJSONObject("transaction").remove("error_code") })
+            .on("GET /pay/sdk-config", Fixtures.response("sdk-config-sandbox"))
+            .on("POST /pay/process", FakeResponse.timeout())
+            .on("GET /pay/status", Fixtures.response("status-pending-attempt-refused"))
+        val (blind, blindEvents) = checkout(unknown)
+        blind.start()
+        runCurrent()
+        blind.selectMethod("mobile_money")
+        blind.setPhone("670000000")
+        blind.payMobileMoney()
+        advanceTimeBy(5_000)
+        runCurrent()
+        assertEquals(CheckoutState.PENDING, blind.state, "not this attempt's refusal")
+        advanceTimeBy(70_000)
+        runCurrent()
+        assertEquals("Connection error. Check your network.", assertIs<SheetScreen.Form>(blind.screen.value).banner)
+        assertTrue(blindEvents.events.none { it == "error:insufficient_funds" }, "${blindEvents.events}")
+
+        // `null` with the key present: no refusal, so a code the status then shows is this attempt's.
+        val none = FakeApi()
+            .on("GET /pay/session", Fixtures.response("session-pending-after-refusal") { it.getJSONObject("transaction").put("error_code", JSONObject.NULL) })
+            .on("GET /pay/sdk-config", Fixtures.response("sdk-config-sandbox"))
+            .on("POST /pay/process", FakeResponse.timeout())
+            .on("GET /pay/status", Fixtures.response("status-pending-attempt-refused"))
+        val (fresh, _) = checkout(none)
+        fresh.start()
+        runCurrent()
+        fresh.selectMethod("mobile_money")
+        fresh.setPhone("670000000")
+        fresh.payMobileMoney()
+        advanceTimeBy(5_000)
+        runCurrent()
+        assertEquals("insufficient_funds", assertIs<SheetScreen.Failed>(fresh.screen.value).error.code)
 
         // `null` without a refusal (2.1), and a missing key reads as null (2.0).
         val clean = com.wajub.mobile.mapper.RawSessionResponse.fromJson(Fixtures.body("session-cm-aggregate")).toModel()

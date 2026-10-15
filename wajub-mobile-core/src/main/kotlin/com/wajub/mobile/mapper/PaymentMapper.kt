@@ -51,6 +51,9 @@ data class RawTransaction(
     val terminalAt: String? = null,
     val errorCode: String? = null,
 ) {
+    // False when the answer left `error_code` out (an older API).
+    internal var errorCodeReported: Boolean = true
+
     /** The earlier constructor, kept for Java and compiled code. */
     constructor(
         id: String,
@@ -151,7 +154,7 @@ data class RawTransaction(
                 updatedAt = obj.str("updated_at"),
                 terminalAt = obj.str("terminal_at"),
                 errorCode = obj.str("error_code"),
-            )
+            ).also { it.errorCodeReported = obj.has("error_code") }
         }
     }
 }
@@ -794,7 +797,7 @@ object PaymentMapper {
             updatedAt = raw.updatedAt,
             terminalAt = raw.terminalAt,
             errorCode = raw.errorCode,
-        )
+        ).also { it.errorCodeReported = raw.errorCodeReported }
 
     fun mapStatusToResult(status: String, transaction: SessionTransaction): PaymentResult {
         val normalized = status.lowercase()

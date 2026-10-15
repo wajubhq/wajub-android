@@ -168,6 +168,10 @@ class CheckoutController internal constructor(
     private var attemptStartedAt: Long? = null
     private var knownErrorCode: String? = null
     private var errorCodeBeforeAttempt: String? = null
+    // Whether the refusal left on the payment is known: an older API's session
+    // leaves `error_code` out, and only a status read tells it then.
+    private var errorCodeKnown = true
+    private var errorCodeBeforeAttemptKnown = true
     private var threeDsExpired = false
     // A solution is good for one request: the next one solves a new challenge.
     private var altcha: Deferred<AltchaSolution?>? = null
@@ -291,6 +295,7 @@ class CheckoutController internal constructor(
         lastTransaction = loaded.transaction
         // A refusal an earlier presentation left on the payment is not news to this one.
         knownErrorCode = loaded.transaction.errorCode
+        errorCodeKnown = loaded.transaction.errorCodeReported
         _language.value = WajubLanguage.resolve(options.locale, loaded.sessionLocale, deviceLanguage())
         session.language = lang
         val txn = loaded.transaction
@@ -648,6 +653,7 @@ class CheckoutController internal constructor(
         undecided = true
         attemptStartedAt = clock()
         errorCodeBeforeAttempt = knownErrorCode
+        errorCodeBeforeAttemptKnown = errorCodeKnown
         heldFailure = null
         threeDsExpired = false
         forms[form.method.id] = form
@@ -1156,7 +1162,10 @@ class CheckoutController internal constructor(
                 val seen = lastSeen
                 if (seen != null) {
                     // A refusal an earlier try left on the payment is not news.
-                    if (seen.status != "pending" || seen.errorCode != null && seen.errorCode != errorCodeBeforeAttempt) return@launch
+                    // A new refusal is this attempt's answer (decided as it was read); with the
+                    // earlier one unknown, no code is taken for it and the rule applies.
+                    if (seen.status != "pending") return@launch
+                    if (errorCodeBeforeAttemptKnown && seen.errorCode != null && seen.errorCode != errorCodeBeforeAttempt) return@launch
                     break
                 }
                 delay(UNANSWERED_RECHECK_MS)
@@ -1182,12 +1191,16 @@ class CheckoutController internal constructor(
         when (event) {
             is WatchEvent.StatusChanged -> {
                 lastSeen = event.status
-                event.status.errorCode?.let { knownErrorCode = it }
+                // A status says which refusal the payment carries (null: none): the
+                // baseline of the next attempt.
+                knownErrorCode = event.status.errorCode
+                errorCodeKnown = true
                 // A request without an answer, then a new refusal on the payment: it arrived and was
                 // refused. One the payment already carried before this attempt is not news.
                 val code = event.status.errorCode
                 if (unansweredKey != null && !sawProcessing && event.status.status == "pending" &&
-                    code != null && code != errorCodeBeforeAttempt && _screen.value is SheetScreen.Pending
+                    errorCodeBeforeAttemptKnown && code != null && code != errorCodeBeforeAttempt &&
+                    _screen.value is SheetScreen.Pending
                 ) {
                     lastTransaction = lastTransaction?.copy(status = "pending", errorCode = code)
                     showFailed(PaymentWatcher.attemptEnded(event.status, lang))

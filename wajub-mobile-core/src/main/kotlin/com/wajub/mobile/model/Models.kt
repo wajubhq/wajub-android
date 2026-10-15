@@ -34,6 +34,10 @@ data class SessionTransaction(
     /** The last refusal of an attempt (`insufficient_funds`…) while the payment is back to `pending`. */
     val errorCode: String? = null,
 ) {
+    // False when the answer left `error_code` out (an older API): the refusal
+    // left on the payment, if any, is then unknown.
+    internal var errorCodeReported: Boolean = true
+
     /** The earlier constructor, kept for Java and compiled code. */
     constructor(
         id: String,
