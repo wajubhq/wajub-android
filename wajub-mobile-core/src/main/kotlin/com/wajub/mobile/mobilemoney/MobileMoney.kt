@@ -201,8 +201,13 @@ object MobileMoney {
             }
         }
 
-    /** Digits only: every character but 0-9 is dropped (a `+` too). */
-    fun sanitize(input: String): String = input.filter { it in '0'..'9' }
+    /** Digits only, as 0-9 whatever script they were typed in; everything else is dropped (a `+` too). */
+    fun sanitize(input: String): String = buildString {
+        for (c in input) {
+            val digit = Character.digit(c, 10)
+            if (digit >= 0) append('0' + digit)
+        }
+    }
 
     /** The digits as typed, without the dial code. */
     fun typedNationalDigits(input: String, country: MobileMoneyCountry): String {

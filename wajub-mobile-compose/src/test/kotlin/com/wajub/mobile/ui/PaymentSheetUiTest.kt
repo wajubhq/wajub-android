@@ -66,6 +66,13 @@ class PaymentSheetUiTest {
     private val controllers = mutableListOf<CheckoutController>()
     private val events = mutableListOf<String>()
 
+    // The Mobile Money tables are read off the main thread at the first load: read them now, so a
+    // loaded machine cannot leave a sheet still loading when a test looks at it.
+    @org.junit.Before
+    fun readTables() {
+        com.wajub.mobile.mobilemoney.MobileMoney.data()
+    }
+
     @After
     fun tearDown() {
         // One sheet at a time: settle every sheet a test opened.

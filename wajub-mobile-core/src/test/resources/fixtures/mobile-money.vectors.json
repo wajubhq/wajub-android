@@ -299,6 +299,26 @@
       "why": "03 is no mobile range: the 0 is not given back"
     },
     {
+      "input": "٠٧٠٧٠٠٠٠٠٠",
+      "country": "CI",
+      "national_digits": "0707000000",
+      "valid": true,
+      "detected_operator": "orange",
+      "e164": "+2250707000000",
+      "formatted": "07 07 00 00 00",
+      "why": "Arabic-Indic digits, read as ASCII"
+    },
+    {
+      "input": "+۲۲۵ ۰۵ ۰۵ ۰۰ ۰۰ ۰۰",
+      "country": "CI",
+      "national_digits": "0505000000",
+      "valid": true,
+      "detected_operator": "mtn",
+      "e164": "+2250505000000",
+      "formatted": "22 50 50 50 00 00 0",
+      "why": "Persian digits, read as ASCII"
+    },
+    {
       "input": "196123456",
       "country": "BJ",
       "national_digits": "0196123456",
@@ -579,9 +599,20 @@
       "country": "MZ",
       "national_digits": "841234567",
       "valid": true,
-      "detected_operator": null,
+      "detected_operator": "mpesa",
       "e164": "+258841234567",
-      "formatted": "84 12 34 56 7"
+      "formatted": "84 12 34 56 7",
+      "why": "Vodacom's 84: M-Pesa"
+    },
+    {
+      "input": "+258 86 123 4567",
+      "country": "MZ",
+      "national_digits": "861234567",
+      "valid": true,
+      "detected_operator": null,
+      "e164": "+258861234567",
+      "formatted": "25 88 61 23 45 67",
+      "why": "Movitel: no operator listed here"
     },
     {
       "input": "01001234567",
@@ -1017,6 +1048,45 @@
       "expected": "invalid_phone",
       "detected": "orange",
       "why": "length is checked before the mismatch"
+    },
+    {
+      "country": "BJ",
+      "choices": [
+        "mtn",
+        "moov"
+      ],
+      "selected": "mtn",
+      "phone": "91 00 00 00",
+      "sandbox": true,
+      "expected": "operator_mismatch",
+      "detected": "moov",
+      "why": "a Moov test number (+229 91): the sandbox refuses it on bj.mtn"
+    },
+    {
+      "country": "CM",
+      "choices": [
+        "mtn",
+        "orange",
+        "eu"
+      ],
+      "selected": "mtn",
+      "phone": "680000000",
+      "sandbox": true,
+      "expected": "operator_mismatch",
+      "detected": "eu",
+      "why": "+23768 tests Express Union, where the numbering plan has MTN"
+    },
+    {
+      "country": "CM",
+      "choices": [
+        "mtn",
+        "orange"
+      ],
+      "selected": "mtn",
+      "phone": "670000000",
+      "sandbox": true,
+      "expected": null,
+      "detected": "mtn"
     }
   ],
   "preselection": [

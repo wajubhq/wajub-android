@@ -29,7 +29,7 @@ data class FormIssue(
     val code: String,
     /** Placeholders of the message (`detected`, `selected`). */
     val args: Map<String, String> = emptyMap(),
-    /** Whether it stops the payment (a sandbox mismatch only warns). */
+    /** Whether it stops the payment. */
     val blocking: Boolean = true,
 )
 
@@ -113,8 +113,8 @@ object MobileMoneyRules {
     /**
      * Checks the form before submitting, in this order:
      * `phone_required`, `invalid_phone`, `operator_mismatch`, `operator_required`.
-     * In a [sandbox] session a test number is valid and tests its own operator,
-     * and a mismatch does not block.
+     * In a [sandbox] session a test number is valid and tests its own operator:
+     * picked on another operator, it is a mismatch, as in live.
      */
     fun validate(
         phone: String,
@@ -129,12 +129,7 @@ object MobileMoneyRules {
         val detected = MobileMoney.detectOperator(phone, country, sandbox)
         val independent = MobileMoney.data().operatorIndependentWallets
         if (detected != null && detected in choiceIds && selected != null && detected != selected && selected !in independent) {
-            val issue = FormIssue(
-                "operator_mismatch",
-                mapOf("detected" to label(detected), "selected" to label(selected)),
-                blocking = !sandbox,
-            )
-            if (issue.blocking) return issue
+            return FormIssue("operator_mismatch", mapOf("detected" to label(detected), "selected" to label(selected)))
         }
         if (selected == null) return FormIssue("operator_required")
         return null

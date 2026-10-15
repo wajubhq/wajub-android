@@ -54,7 +54,7 @@ class MobileMoneyContractTest {
                 choiceIds = v.ids("choices"),
                 selected = v.nullableString("selected"),
                 label = { it },
-                sandbox = false,
+                sandbox = v.optBoolean("sandbox", false),
             )
             assertEquals(v.nullableString("expected"), issue?.code, v.toString())
             if (issue?.code == "operator_mismatch") {
@@ -188,13 +188,14 @@ class MobileMoneyContractTest {
     }
 
     @Test
-    fun `MM-08 does not block mismatches in sandbox`() = runTest {
+    fun `MM-08 reads mismatches in sandbox from the test number`() = runTest {
+        // An MTN test number picked on Orange: the sandbox would refuse it, so the form does, as in live.
         val api = FakeApi()
             .on("GET /pay/session", Fixtures.response("session-sandbox-cm"))
             .on("GET /pay/sdk-config", Fixtures.response("sdk-config-sandbox"))
             .on("POST /pay/process", Fixtures.response("process-processing-mobile-money-sandbox"))
             .on("GET /pay/status", Fixtures.response("status-processing"))
-        val (controller, _) = checkout(api)
+        val (controller, recorder) = checkout(api)
         controller.start()
         runCurrent()
         controller.selectMethod("mobile_money")
@@ -202,24 +203,32 @@ class MobileMoneyContractTest {
         controller.pickOperator("orange")
         controller.payMobileMoney()
         runCurrent()
-        assertEquals(1, api.count("POST /pay/process"), "the sandbox number is sent although it reads as MTN")
+        assertEquals(0, api.count("POST /pay/process"))
+        assertEquals(
+            "This number belongs to MTN MoMo. Pick MTN MoMo in the list, or enter a Orange Money number.",
+            assertIs<SheetScreen.Form>(controller.screen.value).mobileMoney!!.phoneError,
+        )
+        assertTrue(recorder.events.none { it.startsWith("error:") }, "form errors are not onError")
+        // On its own operator it goes.
+        controller.pickOperator("mtn")
+        controller.payMobileMoney()
+        runCurrent()
+        assertEquals(1, api.count("POST /pay/process"))
 
         // In live, the same mismatch stops the payment with the web's message.
         val live = cmApi()
-        val (liveController, recorder) = checkout(live, com.wajub.mobile.checkout.PresentOptions(sessionToken = "t", locale = "en"))
+        val (liveController, _) = checkout(live, com.wajub.mobile.checkout.PresentOptions(sessionToken = "t", locale = "en"))
         liveController.start()
         runCurrent()
         liveController.selectMethod("mobile_money")
         liveController.setPhone("677123456")
         liveController.pickOperator("orange")
         liveController.payMobileMoney()
-        val form = assertIs<SheetScreen.Form>(liveController.screen.value).mobileMoney!!
         assertEquals(
             "This number belongs to MTN MoMo. Pick MTN MoMo in the list, or enter a Orange Money number.",
-            form.phoneError,
+            assertIs<SheetScreen.Form>(liveController.screen.value).mobileMoney!!.phoneError,
         )
         assertEquals(0, live.count("POST /pay/process"))
-        assertTrue(recorder.events.none { it.startsWith("error:") }, "form errors are not onError")
     }
 
     @Test
