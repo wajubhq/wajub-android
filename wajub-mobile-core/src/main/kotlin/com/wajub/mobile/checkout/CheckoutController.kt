@@ -483,7 +483,7 @@ class CheckoutController internal constructor(
     fun setCountry(code: String) = updateMobileMoney { form ->
         val m = method ?: return@updateMobileMoney form
         val choices = choicesFor(m, code)
-        val detected = MobileMoney.data().country(code)?.let { MobileMoney.detectOperator(form.phone, it) }
+        val detected = MobileMoney.data().country(code)?.let { MobileMoney.detectOperator(form.phone, it, sandbox) }
         form.copy(
             country = code.uppercase(),
             choices = choices,
@@ -498,7 +498,7 @@ class CheckoutController internal constructor(
     /** The number as typed: detection preselects its operator until the payer picks one. */
     fun setPhone(text: String) = updateMobileMoney { form ->
         val phone = text.filter { it.isDigit() || it == '+' }.take(16)
-        val detected = form.countryInfo?.let { MobileMoney.detectOperator(phone, it) }
+        val detected = form.countryInfo?.let { MobileMoney.detectOperator(phone, it, sandbox) }
         form.copy(
             phone = phone,
             detected = detected,
@@ -540,7 +540,6 @@ class CheckoutController internal constructor(
             show(current.copy(mobileMoney = form.copy(operatorError = message("operator_unavailable"))))
             return
         }
-        val sandbox = lastTransaction?.sandbox == true
         val labels = form.choices.associate { it.id to it.label }
         val issue = MobileMoneyRules.validate(form.phone, country, form.choices.map { it.id }, form.selected, { labels[it] ?: it }, sandbox)
         if (issue != null) {
@@ -550,7 +549,7 @@ class CheckoutController internal constructor(
             return
         }
         val choice = form.selectedChoice ?: return
-        val data = MobileMoneyRules.requestData(choice, form.phone, country, form.pickedByHand)
+        val data = MobileMoneyRules.requestData(choice, form.phone, country, form.pickedByHand, sandbox)
         submit(current, choice.channelSlug) { solution, key ->
             session.process(ProcessRequest(choice.channelSlug, withExtras(data, solution), key))
         }
@@ -730,6 +729,9 @@ class CheckoutController internal constructor(
 
     private fun family(): String = method?.family ?: "unknown"
 
+    // A sandbox session: its test numbers are valid and test their own operator.
+    private val sandbox: Boolean get() = (_session.value?.transaction ?: lastTransaction)?.sandbox == true
+
     private fun started() {
         attemptInFlight = true
         if (paymentStarted) return
@@ -802,7 +804,7 @@ class CheckoutController internal constructor(
     private fun approvalPhone(form: SheetScreen.Form): String? {
         val momo = form.mobileMoney ?: return null
         val country = momo.countryInfo ?: return null
-        return MobileMoney.e164(momo.phone, country)
+        return MobileMoney.e164(momo.phone, country, sandbox)
     }
 
     private suspend fun onRefused(error: WajubError, txn: SessionTransaction?, form: SheetScreen.Form) {
@@ -891,7 +893,7 @@ class CheckoutController internal constructor(
     // "This phone number belongs to ORANGE (cm.orange) but…": the API names the operator.
     private fun mismatchMessage(form: MobileMoneyForm, apiText: String): String {
         val named = BELONGS_TO.find(apiText)?.groupValues?.get(1)?.lowercase()
-        val detected = named ?: form.countryInfo?.let { MobileMoney.detectOperator(form.phone, it) }
+        val detected = named ?: form.countryInfo?.let { MobileMoney.detectOperator(form.phone, it, sandbox) }
         val label = { id: String? ->
             form.choices.firstOrNull { it.id == id }?.label
                 ?: id?.let { MobileMoney.data().brandLabel(it) ?: it.uppercase() }.orEmpty()

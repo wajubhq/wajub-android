@@ -213,7 +213,53 @@ class MobileMoneyContractTest {
         assertEquals(json.getJSONObject("countries").length(), data.countries.size)
         assertEquals("+237", data.country("cm")!!.dialCode)
         assertTrue(data.operatorIndependentWallets.containsAll(listOf("wave", "eu", "djamo")))
-        val future = JSONObject(shipped).put("schema_version", 2).toString()
-        assertFailsWith<IllegalArgumentException> { MobileMoneyData.parse(future) }
+        assertEquals(2, MobileMoneyData.SUPPORTED_SCHEMA_VERSION)
+        for (other in listOf(1, 3)) {
+            val unknown = JSONObject(shipped).put("schema_version", other).toString()
+            assertFailsWith<IllegalArgumentException>("schema $other") { MobileMoneyData.parse(unknown) }
+        }
+        // The shipped copy carries the tables, not the spec's notes.
+        for (note in listOf("source", "errata", "algorithms")) assertFalse(json.has(note), note)
+    }
+
+    @Test
+    fun `MM-10 takes the sandbox test numbers`() = runTest {
+        for (v in cases("sandbox_numbers")) {
+            val input = v.getString("input")
+            val country = MobileMoney.data().country(v.getString("country"))!!
+            val label = "${v.getString("country")} '$input'"
+            val operator = v.nullableString("operator")
+            val e164 = v.nullableString("e164")
+            val test = MobileMoney.sandboxTestNumber(input, country)
+            assertEquals(operator, test?.operator, label)
+            assertEquals(e164, test?.e164, label)
+            if (test != null) {
+                // In a sandbox session: valid whatever the plan says, the prefix's operator, sent as read.
+                assertTrue(MobileMoney.isValid(input, country, sandbox = true), label)
+                assertEquals(operator, MobileMoney.detectOperator(input, country, sandbox = true), label)
+                assertEquals(e164, MobileMoney.e164(input, country, sandbox = true), label)
+                // Outside it the prefixes mean nothing: the numbering plan decides.
+                assertEquals(MobileMoney.nationalDigits(input, country).let { country.dialCode + it }, MobileMoney.e164(input, country), label)
+            }
+        }
+
+        // The sheet in a sandbox session: a Gabonese Airtel test number, sent as read.
+        val api = FakeApi()
+            .on("GET /pay/session", Fixtures.response("session-sandbox-cm") { body ->
+                val channel = JSONObject().put("id", "ga.airtel").put("slug", "ga.airtel").put("name", "Airtel Money")
+                    .put("type", "mobile_money").put("countries", org.json.JSONArray().put("GA")).put("currency", "XAF")
+                body.put("channels", org.json.JSONArray().put(channel))
+            })
+            .on("GET /pay/sdk-config", Fixtures.response("sdk-config-sandbox"))
+            .on("POST /pay/process", Fixtures.response("process-processing-mobile-money-sandbox"))
+            .on("GET /pay/status", Fixtures.response("status-processing"))
+        val (controller, _) = checkout(api)
+        controller.start()
+        runCurrent()
+        controller.setPhone("0000000")
+        controller.payMobileMoney()
+        runCurrent()
+        assertEquals(1, api.count("POST /pay/process"), "a test number is valid in sandbox")
+        assertEquals("+2410000000", api.lastBody("POST /pay/process").getJSONObject("data").getString("phone"))
     }
 }

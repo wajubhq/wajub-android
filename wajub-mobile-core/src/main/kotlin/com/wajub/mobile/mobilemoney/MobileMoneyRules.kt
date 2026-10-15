@@ -113,7 +113,8 @@ object MobileMoneyRules {
     /**
      * Checks the form before submitting, in this order:
      * `phone_required`, `invalid_phone`, `operator_mismatch`, `operator_required`.
-     * In sandbox a mismatch does not block (test prefixes follow no real plan).
+     * In a [sandbox] session a test number is valid and tests its own operator,
+     * and a mismatch does not block.
      */
     fun validate(
         phone: String,
@@ -124,8 +125,8 @@ object MobileMoneyRules {
         sandbox: Boolean,
     ): FormIssue? {
         if (MobileMoney.sanitize(phone).isEmpty()) return FormIssue("phone_required")
-        if (!MobileMoney.isValid(phone, country)) return FormIssue("invalid_phone")
-        val detected = MobileMoney.detectOperator(phone, country)
+        if (!MobileMoney.isValid(phone, country, sandbox)) return FormIssue("invalid_phone")
+        val detected = MobileMoney.detectOperator(phone, country, sandbox)
         val independent = MobileMoney.data().operatorIndependentWallets
         if (detected != null && detected in choiceIds && selected != null && detected != selected && selected !in independent) {
             val issue = FormIssue(
@@ -149,11 +150,17 @@ object MobileMoneyRules {
         return if (pickedByHand || detected == selected) selected else null
     }
 
-    /** The data of a Mobile Money payment, from the form. */
-    fun requestData(choice: OperatorChoice, phone: String, country: MobileMoneyCountry, pickedByHand: Boolean): Map<String, Any?> {
-        val detected = MobileMoney.detectOperator(phone, country)
+    /** The data of a Mobile Money payment, from the form; in a [sandbox] session a test number is sent as typed. */
+    fun requestData(
+        choice: OperatorChoice,
+        phone: String,
+        country: MobileMoneyCountry,
+        pickedByHand: Boolean,
+        sandbox: Boolean = false,
+    ): Map<String, Any?> {
+        val detected = MobileMoney.detectOperator(phone, country, sandbox)
         return buildMap {
-            put("phone", MobileMoney.e164(phone, country))
+            put("phone", MobileMoney.e164(phone, country, sandbox))
             put("country", country.code)
             operatorHint(choice.viaAggregate, choice.id, pickedByHand, detected)?.let { put("operator", it) }
         }
