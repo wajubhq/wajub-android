@@ -209,11 +209,19 @@ object MobileMoney {
         }
     }
 
-    /** The digits as typed, without the dial code. */
+    /**
+     * The digits as typed, without the dial code when the number is written
+     * with it: always after a `+`; otherwise only when the digits are not
+     * already a complete national number (Ghana's `233 123 456` is one).
+     */
     fun typedNationalDigits(input: String, country: MobileMoneyCountry): String {
         val digits = sanitize(input)
         val dial = sanitize(country.dialCode)
-        return if (dial.isNotEmpty() && digits.startsWith(dial)) digits.removePrefix(dial) else digits
+        if (dial.isEmpty() || !digits.startsWith(dial)) return digits
+        if (input.trimStart().startsWith("+")) return digits.removePrefix(dial)
+        val asTyped = readNational(digits, country)
+        val complete = asTyped.length == country.nationalNumberLength && country.numberPrefix?.let { asTyped.startsWith(it) } != false
+        return if (complete) digits else digits.removePrefix(dial)
     }
 
     /**
@@ -222,8 +230,11 @@ object MobileMoney {
      * the leading 0 kept where it is part of the number (and given back to a
      * mobile number typed without it), dropped elsewhere.
      */
-    fun nationalDigits(input: String, country: MobileMoneyCountry): String {
-        var digits = typedNationalDigits(input, country)
+    fun nationalDigits(input: String, country: MobileMoneyCountry): String = readNational(typedNationalDigits(input, country), country)
+
+    // Typed national digits as the country reads them: an earlier plan's form, then its leading 0.
+    private fun readNational(typed: String, country: MobileMoneyCountry): String {
+        var digits = typed
         val earlier = country.earlier
         if (earlier != null && digits.length == earlier.length) {
             earlier.map.keys.filter { digits.startsWith(it) }.maxByOrNull { it.length }?.let { key ->

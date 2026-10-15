@@ -132,6 +132,64 @@
       "formatted": "02 71 23 45 67"
     },
     {
+      "input": "233 123 456",
+      "country": "GH",
+      "national_digits": "233123456",
+      "valid": true,
+      "detected_operator": "airteltigo",
+      "e164": "+233233123456",
+      "formatted": "23 31 23 45 6",
+      "why": "an AT number typed without its 0: it starts like the dial code, and is a national number"
+    },
+    {
+      "input": "0233 123 456",
+      "country": "GH",
+      "national_digits": "233123456",
+      "valid": true,
+      "detected_operator": "airteltigo",
+      "e164": "+233233123456",
+      "formatted": "02 33 12 34 56"
+    },
+    {
+      "input": "+233 233 123 456",
+      "country": "GH",
+      "national_digits": "233123456",
+      "valid": true,
+      "detected_operator": "airteltigo",
+      "e164": "+233233123456",
+      "formatted": "23 32 33 12 34 56",
+      "why": "after a +, the dial code"
+    },
+    {
+      "input": "233233123456",
+      "country": "GH",
+      "national_digits": "233123456",
+      "valid": true,
+      "detected_operator": "airteltigo",
+      "e164": "+233233123456",
+      "formatted": "23 32 33 12 34 56",
+      "why": "the dial code without its +, then the AT number"
+    },
+    {
+      "input": "+233 24 412 3456",
+      "country": "GH",
+      "national_digits": "244123456",
+      "valid": true,
+      "detected_operator": "mtn",
+      "e164": "+233244123456",
+      "formatted": "23 32 44 12 34 56"
+    },
+    {
+      "input": "233244123456",
+      "country": "GH",
+      "national_digits": "244123456",
+      "valid": true,
+      "detected_operator": "mtn",
+      "e164": "+233244123456",
+      "formatted": "23 32 44 12 34 56",
+      "why": "the dial code without its +"
+    },
+    {
       "input": "08031234567",
       "country": "NG",
       "national_digits": "8031234567",
