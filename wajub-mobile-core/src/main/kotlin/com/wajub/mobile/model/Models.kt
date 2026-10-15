@@ -379,7 +379,7 @@ data class Branding(
     /** `light`, `dark`, `system`, or null. */
     val appearanceMode: String? = null,
     val density: String? = null,
-    /** Hides "Secured by Wajub". The API sends a boolean, the web also an object. */
+    /** The merchant is white-labelled: the sheet hides "Secured by Wajub". */
     val whiteLabel: Boolean = false,
     val inputBackgroundColor: String? = null,
     val inputBorderColor: String? = null,

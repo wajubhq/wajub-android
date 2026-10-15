@@ -148,6 +148,24 @@ class MobileMoneyContractTest {
     }
 
     @Test
+    fun `MM-05 reads a number typed in another script's digits`() = runTest {
+        // Arabic-Indic digits for 677 123 456: read, checked and sent as the payer's number.
+        val api = cmApi()
+            .on("POST /pay/process", Fixtures.response("process-processing-mobile-money-live"))
+            .on("GET /pay/status", Fixtures.response("status-processing"))
+        val (controller, _) = checkout(api)
+        controller.start()
+        runCurrent()
+        controller.selectMethod("mobile_money")
+        controller.setPhone("+٢٣٧ ٦٧٧ ١٢٣ ٤٥٦")
+        assertEquals("+237677123456", assertIs<SheetScreen.Form>(controller.screen.value).mobileMoney!!.phone)
+        controller.payMobileMoney()
+        runCurrent()
+        assertEquals(1, api.count("POST /pay/process"))
+        assertEquals("+237677123456", api.lastBody("POST /pay/process").getJSONObject("data").getString("phone"))
+    }
+
+    @Test
     fun `MM-06 shows the approval screen`() = runTest {
         for (fixture in listOf("process-processing-mobile-money-live", "process-processing-mobile-money-sandbox")) {
             val api = cmApi()

@@ -497,7 +497,7 @@ class CheckoutController internal constructor(
 
     /** The number as typed: detection preselects its operator until the payer picks one. */
     fun setPhone(text: String) = updateMobileMoney { form ->
-        val phone = text.filter { it.isDigit() || it == '+' }.take(16)
+        val phone = asciiDigits(text, keepPlus = true).take(16)
         val detected = form.countryInfo?.let { MobileMoney.detectOperator(phone, it, sandbox) }
         form.copy(
             phone = phone,
@@ -525,7 +525,9 @@ class CheckoutController internal constructor(
         val current = _screen.value as? SheetScreen.Form ?: return
         val card = current.card ?: return
         if (current.busy || finished) return
-        show(current.copy(card = card.copy(values = card.values + (field to value), errors = card.errors - field), banner = null))
+        // Digits typed in another script are read as 0-9; the card's numbers keep their digits only.
+        val clean = if (field in CARD_NUMBER_FIELDS) asciiDigits(value) else asciiDigitsKeepingText(value)
+        show(current.copy(card = card.copy(values = card.values + (field to clean), errors = card.errors - field), banner = null))
     }
 
     // ── Paying ───────────────────────────────────────────────────────────
@@ -625,6 +627,7 @@ class CheckoutController internal constructor(
         val v = value?.trim().orEmpty()
         if (flavor is CardFlavor.Stripe) return null
         if (v.isEmpty()) return message("field_required")
+        if (field in CARD_NUMBER_FIELDS && v.any { it !in '0'..'9' }) return message("field_required")
         return when {
             field == "email" && PaymentMapper.hostedCardFieldError("email", v) != null -> message("invalid_email")
             field == "country" && PaymentMapper.hostedCardFieldError("country", v) != null -> message("field_required")
@@ -728,6 +731,25 @@ class CheckoutController internal constructor(
     }
 
     private fun family(): String = method?.family ?: "unknown"
+
+    // [text] with its decimal digits as 0-9, whatever script they were typed in; the rest as typed.
+    private fun asciiDigitsKeepingText(text: String): String = buildString {
+        for (c in text) {
+            val digit = Character.digit(c, 10)
+            if (digit >= 0) append('0' + digit) else append(c)
+        }
+    }
+
+    // The decimal digits of [text] as 0-9, whatever script the keyboard typed them in (٠٧ -> 07).
+    private fun asciiDigits(text: String, keepPlus: Boolean = false): String = buildString {
+        for (c in text) {
+            val digit = Character.digit(c, 10)
+            when {
+                digit >= 0 -> append('0' + digit)
+                keepPlus && c == '+' -> append('+')
+            }
+        }
+    }
 
     // A sandbox session: its test numbers are valid and test their own operator.
     private val sandbox: Boolean get() = (_session.value?.transaction ?: lastTransaction)?.sandbox == true
@@ -1004,12 +1026,13 @@ class CheckoutController internal constructor(
         val current = _screen.value as? SheetScreen.Step ?: return
         if (current.busy || finished) return
         val clean = when (field) {
-            "code", "pin" -> value.filter { it.isDigit() }.take(if (current.kind == StepKind.Pin) 6 else 10)
+            "code", "pin" -> asciiDigits(value).take(if (current.kind == StepKind.Pin) 6 else 10)
             // Digits, shown as YYYY-MM-DD while typed.
-            "birthday" -> value.filter { it.isDigit() }.take(8).let { d ->
+            "birthday" -> asciiDigits(value).take(8).let { d ->
                 listOfNotNull(d.take(4), d.drop(4).take(2).ifEmpty { null }, d.drop(6).ifEmpty { null }).joinToString("-")
             }
-            else -> value
+            // A phone or an address: its digits read as 0-9, the rest as typed.
+            else -> asciiDigitsKeepingText(value)
         }
         show(current.copy(values = current.values + (field to clean), fieldErrors = current.fieldErrors - field, error = null))
     }
@@ -1022,6 +1045,8 @@ class CheckoutController internal constructor(
             val v = current.values[field].orEmpty().trim()
             val ok = when {
                 v.isEmpty() -> false
+                // A code is ASCII digits only.
+                field in setOf("code", "pin") && v.any { it !in '0'..'9' } -> false
                 field == "code" && current.kind == StepKind.ThreeDs -> v.length in 4..8
                 field == "code" -> v.length in 4..10
                 field == "pin" -> v.length in 4..6
@@ -1514,6 +1539,9 @@ class CheckoutController internal constructor(
     }
 
     internal companion object {
+        // The card fields that hold digits only.
+        private val CARD_NUMBER_FIELDS = setOf("card.number", "cvv", "expiry_month", "expiry_year")
+
         const val RESEND_AFTER_MS: Long = 60_000L
         const val UNANSWERED_AFTER_MS: Long = 60_000L
         private const val UNANSWERED_RECHECK_MS: Long = 5_000L

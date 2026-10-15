@@ -554,4 +554,52 @@ class StepsContractTest {
         runCurrent()
         assertEquals("unsupported_action", assertIs<SheetScreen.Failed>(magic.screen.value).error.code)
     }
+
+    // Arabic-Indic digits (U+0660…U+0669), as some keyboards type them.
+    private fun arabic(ascii: String): String = ascii.map { c -> if (c in '0'..'9') '\u0660' + (c - '0') else c }.joinToString("")
+
+    @Test
+    fun `CF-01 reads codes and dates typed in another script's digits`() = runTest {
+        for ((fixture, kind, values) in steps) {
+            val api = cmApi().on("POST /pay/process", Fixtures.response(fixture)).on("POST /pay/${kind.path}/verify", Fixtures.response("${kind.path}-verify-success"))
+            val controller = answered(api)
+            values.forEach { (k, v) -> controller.setStepField(k, arabic(v)) }
+            controller.submitStep()
+            runCurrent()
+            val body = api.lastBody("POST /pay/${kind.path}/verify")
+            values.forEach { (k, v) -> assertEquals(v, body.getString(k), "$fixture $k: sent in 0-9") }
+        }
+        // The sandbox 3-D Secure code too.
+        val threeDs = FakeApi()
+            .on("POST /pay/process", Fixtures.response("process-requires-3ds-sandbox"))
+            .on("POST /pay/3ds/verify", Fixtures.response("3ds-verify-202"))
+        val card = sandboxCard(threeDs)
+        card.setStepField("code", arabic("123456"))
+        card.submitStep()
+        runCurrent()
+        assertEquals("123456", threeDs.lastBody("POST /pay/3ds/verify").getString("code"))
+    }
+
+    @Test
+    fun `the sandbox card form reads digits typed in another script`() = runTest {
+        val api = FakeApi()
+            .on("GET /pay/session", Fixtures.response("session-sandbox-cm"))
+            .on("GET /pay/sdk-config", Fixtures.response("sdk-config-sandbox"))
+            .on("POST /pay/process", Fixtures.response("process-requires-3ds-sandbox"))
+            .on("GET /pay/status", Fixtures.response("status-processing"))
+        val (controller, _) = checkout(api, english)
+        controller.start()
+        runCurrent()
+        controller.selectMethod("card")
+        mapOf("card.number" to "4000 0566 5566 5556", "card_holder" to "Awa Ngono", "expiry_month" to "12", "expiry_year" to "30", "cvv" to "123")
+            .forEach { (k, v) -> controller.setCardField(k, arabic(v)) }
+        controller.payCard()
+        runCurrent()
+        val data = api.lastBody("POST /pay/process").getJSONObject("data")
+        assertEquals("4000056655665556", data.getString("card.number"))
+        assertEquals("12", data.getString("expiry_month"))
+        assertEquals("30", data.getString("expiry_year"))
+        assertEquals("123", data.getString("cvv"))
+        assertEquals("Awa Ngono", data.getString("card_holder"))
+    }
 }

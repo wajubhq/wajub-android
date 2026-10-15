@@ -17,7 +17,7 @@ data class MobileMoneyCountry(
     /** Digits a valid number has, or null to accept 7 to 15 digits. */
     val nationalNumberLength: Int?,
     /** The leading 0 is part of the number (Côte d'Ivoire, Benin…): the international format keeps it. */
-    val keepsTrunkZero: Boolean,
+    val leadingZeroSignificant: Boolean,
     val placeholder: String,
     val placeholderFormatted: String,
     val operators: List<String>,
@@ -116,7 +116,7 @@ class MobileMoneyData internal constructor(
                         name = c.str("name") ?: code,
                         dialCode = c.str("dial_code").orEmpty(),
                         nationalNumberLength = c.int("national_number_length"),
-                        keepsTrunkZero = c.str("leading_zero") == "significant",
+                        leadingZeroSignificant = c.str("leading_zero") == "significant",
                         placeholder = c.str("placeholder").orEmpty(),
                         placeholderFormatted = c.str("placeholder_formatted").orEmpty(),
                         operators = c.strings("operators"),
@@ -225,7 +225,7 @@ object MobileMoney {
                 digits = earlier.map.getValue(key) + digits.substring(key.length)
             }
         }
-        if (!country.keepsTrunkZero) return digits.trimStart('0')
+        if (!country.leadingZeroSignificant) return digits.trimStart('0')
         if (!digits.startsWith("0")) {
             val withZero = "0$digits"
             if (withZero.length == country.nationalNumberLength && country.mobilePrefixes.any { withZero.startsWith(it) }) return withZero
