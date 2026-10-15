@@ -2,6 +2,7 @@ package com.wajub.mobile.contract
 
 import com.wajub.mobile.checkout.CardFlavor
 import com.wajub.mobile.checkout.CheckoutController
+import com.wajub.mobile.checkout.CheckoutResult
 import com.wajub.mobile.checkout.CheckoutState
 import com.wajub.mobile.checkout.PresentOptions
 import com.wajub.mobile.checkout.SheetScreen
@@ -113,6 +114,15 @@ class PaymentContractTest {
         val error = assertIs<com.wajub.mobile.model.ProcessOutcome.Failed>(outcome).error
         assertEquals("raw_card_data_not_accepted", error.code)
         assertFalse(error.retryable)
+        assertEquals(0, refused.count("POST /pay/process"), "refused before anything is sent")
+
+        // The low-level call refuses raw card data in live before sending anything.
+        val guarded = cmApi()
+        for (data in listOf(mapOf("card.number" to "4242424242424242"), mapOf("card" to mapOf("number" to "4242", "cvc" to "123")), mapOf("cvv" to "123"))) {
+            val blocked = fakeSession(guarded).process(com.wajub.mobile.model.ProcessRequest("card", data))
+            assertEquals("raw_card_data_not_accepted", assertIs<com.wajub.mobile.model.ProcessOutcome.Failed>(blocked).error.code)
+        }
+        assertEquals(0, guarded.count("POST /pay/process"))
     }
 
     @Test
@@ -423,6 +433,27 @@ class PaymentContractTest {
         runCurrent()
         assertEquals(CheckoutState.EXPIRED, ended.state)
         assertEquals("session_terminal_expired", assertIs<SheetScreen.Expired>(ended.screen.value).error.code)
+
+        // The status cannot be read (no answer, or an answer without a status): money may move, wait.
+        for (unreadable in listOf(FakeResponse.network(), FakeResponse.status(200, "{}"))) {
+            val blind = cmApi()
+                .on("POST /pay/process", Fixtures.response("process-400-not-processable"))
+                .on("GET /pay/status", unreadable)
+            val (waiting, events) = checkout(blind, english)
+            waiting.start()
+            runCurrent()
+            waiting.selectMethod("mobile_money")
+            waiting.setPhone("670000000")
+            waiting.payMobileMoney()
+            advanceTimeBy(30_000)
+            runCurrent()
+            assertEquals(CheckoutState.PENDING, waiting.state)
+            assertTrue(events.events.none { it.startsWith("error:") })
+            waiting.dismiss()
+            runCurrent()
+            assertIs<CheckoutResult.Processing>(events.result)
+            assertEquals(0, blind.count("POST /pay/cancel"))
+        }
     }
 
     @Test

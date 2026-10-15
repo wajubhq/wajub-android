@@ -1,6 +1,8 @@
 package com.wajub.mobile.checkout
 
 import com.wajub.mobile.model.AltchaChallenge
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import java.security.MessageDigest
 
 /** A solved Altcha challenge, sent as `data.altcha` / `altcha`. */
@@ -22,11 +24,15 @@ data class AltchaSolution(
 
 /** The proof of work some sessions ask for before paying (spec §15). */
 object Altcha {
-    /** The `n` in `[0, maxnumber]` whose `SHA-256(salt + n)` is the challenge, or null. */
-    fun solve(challenge: AltchaChallenge): AltchaSolution? {
+    /**
+     * The `n` in `[0, maxnumber]` whose `SHA-256(salt + n)` is the challenge,
+     * or null. CPU-bound: run it off the main thread; it stops when cancelled.
+     */
+    suspend fun solve(challenge: AltchaChallenge): AltchaSolution? {
         val digest = MessageDigest.getInstance("SHA-256")
         val target = challenge.challenge.lowercase()
         for (n in 0..challenge.maxNumber) {
+            if (n % 1_000 == 0L) currentCoroutineContext().ensureActive()
             val hash = digest.digest((challenge.salt + n).toByteArray(Charsets.UTF_8))
             if (hex(hash) == target) {
                 return AltchaSolution(challenge.algorithm, challenge.challenge, n, challenge.salt, challenge.signature)

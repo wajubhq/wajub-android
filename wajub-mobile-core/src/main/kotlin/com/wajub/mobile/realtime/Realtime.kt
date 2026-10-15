@@ -107,17 +107,22 @@ internal object PusherConnector : RealtimeConnector {
             setChannelAuthorizer(authorizer)
         }
         val pusher = Pusher(endpoint.key, options)
-        // A private channel only takes a PrivateChannelEventListener: with a
-        // plain SubscriptionEventListener `bind` throws.
-        pusher.subscribePrivate(channel).bind(EVENT, object : PrivateChannelEventListener {
-            override fun onEvent(event: PusherEvent) {
-                event.data?.let { listener.onEvent(it) }
-            }
+        // A private channel only takes a PrivateChannelEventListener, and the
+        // client tells subscription success or failure only to the listener
+        // given when subscribing.
+        pusher.subscribePrivate(
+            channel,
+            object : PrivateChannelEventListener {
+                override fun onEvent(event: PusherEvent) {
+                    event.data?.let { listener.onEvent(it) }
+                }
 
-            override fun onSubscriptionSucceeded(channelName: String) = listener.onConnected()
+                override fun onSubscriptionSucceeded(channelName: String) = listener.onConnected()
 
-            override fun onAuthenticationFailure(message: String?, e: Exception?) = listener.onDisconnected()
-        })
+                override fun onAuthenticationFailure(message: String?, e: Exception?) = listener.onDisconnected()
+            },
+            EVENT,
+        )
         pusher.connect(object : ConnectionEventListener {
             override fun onConnectionStateChange(change: ConnectionStateChange) {
                 if (change.currentState == ConnectionState.DISCONNECTED) listener.onDisconnected()

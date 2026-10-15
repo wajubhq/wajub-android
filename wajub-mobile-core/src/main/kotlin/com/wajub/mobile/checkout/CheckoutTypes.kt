@@ -73,7 +73,13 @@ data class PresentOptions(
     /** Milliseconds before the success screen closes itself; 0 keeps it. */
     val autoCloseSuccess: Long = 3_000L,
     val callbacks: CheckoutCallbacks = CheckoutCallbacks(),
-)
+) {
+    // The token stays out of logs.
+    override fun toString(): String =
+        "PresentOptions(sessionToken=<redacted>, locale=$locale, appearance=$appearance, loader=$loader, " +
+            "readyTimeout=$readyTimeout, returnUrl=$returnUrl, mobileMoney=$mobileMoney, realtime=$realtime, " +
+            "cancelOnDismiss=$cancelOnDismiss, autoCloseSuccess=$autoCloseSuccess)"
+}
 
 /**
  * The sheet's callbacks, all optional, all on the main thread, in Wajub.js's

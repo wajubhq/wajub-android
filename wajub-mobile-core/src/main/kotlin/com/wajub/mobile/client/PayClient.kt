@@ -73,6 +73,8 @@ internal class ApiResponse(
     /** The response's `X-Request-Id`. */
     val correlationId: String?,
     val retryAfter: String?,
+    /** Clock time the request (its last try) was sent. */
+    val sentAt: Long = 0L,
 ) {
     val isSuccess: Boolean get() = status in 200..299
 }
@@ -88,8 +90,14 @@ class PayClient internal constructor(
     private val environment: () -> DeviceEnvironment = { WajubMobile.device },
     private val pause: suspend (Long) -> Unit = { delay(it) },
     private val random: Random = Random.Default,
-    private val clock: () -> Long = System::currentTimeMillis,
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
+    /**
+     * Over [http] (proxies, pinning, interceptors). The SDK's calls use a
+     * client derived from it (`newBuilder()`) with their own timeouts —
+     * connect 10 s, 30 s or 60 s per call — and leave [http] untouched.
+     */
+    @JvmOverloads
     constructor(http: OkHttpClient = defaultHttp()) : this(OkHttpTransport(http))
 
     /** The language of the errors this client builds; the sheet sets it to its own. */
@@ -177,6 +185,8 @@ class PayClient internal constructor(
 
     internal fun clientHeader(): String = environment().clientHeader
 
+    internal fun warmUp() = environment().prewarm()
+
     /** The body of a 2xx, or the [WajubError] of any other answer. */
     // 1.x threw OkHttp's own IOException (a SocketTimeoutException…) when no answer came back.
     private suspend fun legacySend(token: String, call: ApiCall, body: JSONObject? = null, idempotencyKey: String? = null): ApiResponse =
@@ -252,6 +262,7 @@ class PayClient internal constructor(
                         body = parseObject(outcome.body),
                         correlationId = outcome.header("X-Request-Id") ?: outcome.header("X-Trace-Id"),
                         retryAfter = outcome.header("Retry-After"),
+                        sentAt = sentAt,
                     )
                     else -> throw (outcome as TransportException).also { it.sentAt = sentAt }
                 }

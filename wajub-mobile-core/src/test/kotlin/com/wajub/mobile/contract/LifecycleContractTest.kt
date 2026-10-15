@@ -15,6 +15,7 @@ import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertIs
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
@@ -150,6 +151,127 @@ class LifecycleContractTest {
         assertIs<CheckoutResult.Complete>(buttonEvents.result)
         assertEquals(listOf("success:unknown", "complete:complete"), buttonEvents.events.takeLast(2))
         assertTrue("state:CANCELLED" !in buttonEvents.events)
+
+        // A refused cancel whose status cannot be read: money may move, processing.
+        val unreadable = cmApi()
+            .set("POST /pay/cancel", Fixtures.response("cancel-400-not-cancellable"))
+            .on("GET /pay/status", FakeResponse.network())
+        val (blind, blindEvents) = checkout(unreadable)
+        blind.start()
+        runCurrent()
+        blind.dismiss()
+        advanceTimeBy(60_000)
+        runCurrent()
+        assertIs<CheckoutResult.Processing>(blindEvents.result)
+
+        // Never while loading: the session has not answered, nothing to cancel.
+        val loading = FakeApi()
+            .on("GET /pay/session", Fixtures.response("session-cm-aggregate").let { FakeResponse(it.status, it.body, delayMs = 5_000) })
+            .on("GET /pay/sdk-config", Fixtures.response("sdk-config-cm-stripe"))
+            .on("POST /pay/cancel", Fixtures.response("cancel-200"))
+        val (early, earlyEvents) = checkout(loading)
+        early.start()
+        runCurrent()
+        early.dismiss()
+        advanceTimeBy(10_000)
+        assertEquals(CheckoutResult.Cancelled(CancelReason.Dismissed, null), earlyEvents.result)
+        assertEquals(0, loading.count("POST /pay/cancel"))
+
+        // Never on a processing session, decided as soon as the session answered (not after sdk-config).
+        val processing = FakeApi()
+            .on("GET /pay/session", Fixtures.response("session-processing-mobile-money"))
+            .on("GET /pay/sdk-config", Fixtures.response("sdk-config-cm-stripe").let { FakeResponse(it.status, it.body, delayMs = 8_000) })
+            .on("POST /pay/cancel", Fixtures.response("cancel-200"))
+            .on("GET /pay/status", Fixtures.response("status-processing"))
+        val (approving, approvingEvents) = checkout(processing)
+        approving.start()
+        advanceTimeBy(2_000)
+        approving.dismiss()
+        advanceTimeBy(20_000)
+        assertIs<CheckoutResult.Processing>(approvingEvents.result)
+        assertEquals(0, processing.count("POST /pay/cancel"))
+
+        // Never while an attempt is undecided: no "Cancel payment" on the approval screen, a dismiss resolves processing.
+        val waiting = cmApi()
+            .on("POST /pay/process", Fixtures.response("process-processing-mobile-money-sandbox"))
+            .on("GET /pay/status", Fixtures.response("status-processing"))
+        val (approval, approvalEvents) = checkout(waiting)
+        approval.start()
+        runCurrent()
+        approval.selectMethod("mobile_money")
+        assertTrue(approval.cancellable.value)
+        approval.setPhone("670000000")
+        approval.payMobileMoney()
+        runCurrent()
+        assertEquals(CheckoutState.APPROVAL_REQUIRED, approval.state)
+        assertFalse(approval.cancellable.value)
+        approval.cancelPayment()
+        approval.dismiss()
+        runCurrent()
+        assertIs<CheckoutResult.Processing>(approvalEvents.result)
+        assertEquals(0, waiting.count("POST /pay/cancel"))
+
+        // Nor on a confirmation step: the attempt waits for the payer's code.
+        val step = cmApi()
+            .on("POST /pay/process", Fixtures.response("process-requires-otp"))
+            .on("GET /pay/status", Fixtures.response("status-processing"))
+        val (otp, otpEvents) = checkout(step)
+        otp.start()
+        runCurrent()
+        otp.selectMethod("mobile_money")
+        otp.setPhone("670000000")
+        otp.payMobileMoney()
+        runCurrent()
+        assertEquals(CheckoutState.OTP_REQUIRED, otp.state)
+        assertFalse(otp.cancellable.value)
+        otp.dismiss()
+        runCurrent()
+        assertIs<CheckoutResult.Processing>(otpEvents.result)
+        assertEquals(0, step.count("POST /pay/cancel"))
+
+        // A definitive refusal (a decline, or a pending with a new error_code after processing) makes it
+        // cancellable again: dismissing the failure screen releases the order, the result stays failed.
+        for (refusal in listOf("decline", "attempt ended")) {
+            val api = cmApi()
+            if (refusal == "decline") {
+                api.on("POST /pay/process", Fixtures.response("process-failed-402"))
+            } else {
+                api.on("POST /pay/process", Fixtures.response("process-processing-mobile-money-sandbox"))
+                    .on("GET /pay/status", Fixtures.response("status-processing"), Fixtures.response("status-pending-attempt-refused"))
+            }
+            val (refused, refusedEvents) = checkout(api)
+            refused.start()
+            runCurrent()
+            refused.selectMethod("mobile_money")
+            refused.setPhone("670000000")
+            refused.payMobileMoney()
+            advanceTimeBy(6_000)
+            runCurrent()
+            assertEquals(CheckoutState.FAILED, refused.state, refusal)
+            refused.dismiss()
+            runCurrent()
+            assertIs<CheckoutResult.Failed>(refusedEvents.result, refusal)
+            assertTrue(refusedEvents.events.none { it.startsWith("cancel:") }, "no onCancel: $refusal")
+            assertEquals(1, api.count("POST /pay/cancel"), "the order is released: $refusal")
+        }
+
+        // Back on the form after Try again: a dismiss is a dismiss before any attempt.
+        val again = cmApi().on("POST /pay/process", Fixtures.response("process-failed-402"))
+        val (retry, retryEvents) = checkout(again)
+        retry.start()
+        runCurrent()
+        retry.selectMethod("mobile_money")
+        retry.setPhone("670000000")
+        retry.payMobileMoney()
+        runCurrent()
+        retry.tryAgain()
+        assertTrue(retry.cancellable.value)
+        retry.dismiss()
+        runCurrent()
+        assertEquals(
+            CheckoutResult.Cancelled(CancelReason.Dismissed, Fixtures.body("cancel-200").getString("redirect_url")),
+            retryEvents.result,
+        )
     }
 
     @Test
@@ -356,9 +478,27 @@ class LifecycleContractTest {
 
         val fee = RawSessionResponse.fromJson(Fixtures.body("session-payer-bears-fee")).toModel().transaction
         assertEquals(10350.0, PaymentSuccess.from(fee, "mobile_money").amount, "amount = amount_total")
+        assertFalse("sk_" in PresentOptions(sessionToken = "sk_secret_token").toString(), "the token never prints")
         val updatedOnly = fee.copy(terminalAt = null)
         assertEquals("2026-10-14T09:30:00+00:00", PaymentSuccess.from(updatedOnly, "card").timestamp)
         assertEquals("1970-01-01T00:00:01Z", PaymentSuccess.from(updatedOnly.copy(updatedAt = null), "card", now = 1_000).timestamp)
+    }
+
+    @Test
+    fun `ST-06 dates a watched success when it was seen`() = runTest {
+        val api = cmApi()
+            .on("POST /pay/process", Fixtures.response("process-processing-mobile-money-sandbox"))
+            .on("GET /pay/status", Fixtures.response("status-succeeded"))
+        val (controller, _) = checkout(api)
+        controller.start()
+        runCurrent()
+        controller.selectMethod("mobile_money")
+        controller.setPhone("670000000")
+        controller.payMobileMoney()
+        runCurrent()
+        val payment = assertIs<SheetScreen.Success>(controller.screen.value).payment
+        // The answer's updated_at is the attempt's, not the success's: the time it was seen.
+        assertTrue(payment.timestamp != "2026-10-14T09:30:00+00:00" && payment.timestamp.endsWith("Z"), payment.timestamp)
     }
 
     @Test

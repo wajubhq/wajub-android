@@ -179,6 +179,19 @@ class StepsContractTest {
         ended.submitStep()
         runCurrent()
         assertEquals(CheckoutState.EXPIRED, ended.state)
+
+        // A 5xx says nothing about the step: stay on it, read the status, let the payer try again.
+        val down = cmApi()
+            .on("POST /pay/process", Fixtures.response("process-requires-otp"))
+            .on("POST /pay/otp/verify", Fixtures.response("error-500-production"))
+        val stuck = answered(down)
+        val polls = down.count("GET /pay/status")
+        stuck.setStepField("code", "123456")
+        stuck.submitStep()
+        runCurrent()
+        assertEquals(CheckoutState.OTP_REQUIRED, stuck.state)
+        assertEquals("Service temporarily unavailable.", assertIs<SheetScreen.Step>(stuck.screen.value).error)
+        assertTrue(down.count("GET /pay/status") > polls)
     }
 
     @Test
@@ -229,6 +242,16 @@ class StepsContractTest {
         assertEquals(1, api.count("POST /pay/otp/resend"))
         assertEquals("prc_7hQm2LxV9pR4sT1wYb3N", api.lastBody("POST /pay/otp/resend").getString("otp_id"))
         assertEquals(testScheduler.currentTime + 60_000, assertIs<SheetScreen.Step>(controller.screen.value).resendAt, "the countdown restarts")
+
+        // Every step with a resend endpoint offers it.
+        val pin = cmApi()
+            .on("POST /pay/process", Fixtures.response("process-requires-pin"))
+            .on("POST /pay/pin/resend", FakeResponse.status(200, """{"code":200,"status":"OK","message":"Sent."}"""))
+        val pinStep = answered(pin)
+        advanceTimeBy(60_000)
+        pinStep.resendStep()
+        runCurrent()
+        assertEquals("prc_7hQm2LxV9pR4sT1wYb3N", pin.lastBody("POST /pay/pin/resend").getString("pin_id"))
     }
 
     @Test
@@ -250,6 +273,20 @@ class StepsContractTest {
         assertEquals("aw*******@example.com", step.hint)
         assertEquals(testScheduler.currentTime + 600_000, step.expiresAt)
         assertEquals(CheckoutState.THREE_DS_REQUIRED, controller.state)
+
+        // For an app's own UI too: the code step is a step, 3-D Secure with a page is a page.
+        val own = fakeSession(
+            FakeApi()
+                .on("GET /pay/session", Fixtures.response("session-sandbox-cm"))
+                .on("POST /pay/process", Fixtures.response("process-requires-3ds-sandbox")),
+        )
+            .process(com.wajub.mobile.model.ProcessRequest("card", mapOf("card.number" to "4000056655665556")))
+        val code = assertIs<com.wajub.mobile.model.ProcessOutcome.RequiresAction>(own)
+        assertEquals(StepKind.ThreeDs, code.step)
+        assertEquals("5f0c2b1e-8d4a-4c3b-9e7f-1a2b3c4d5e6f", code.stepId)
+        assertEquals(600, code.timeoutSeconds)
+        val page = com.wajub.mobile.model.ProcessOutcome.RequiresAction("confirm_3ds", url = "https://3ds.example/acs")
+        assertNull(page.step)
 
         // 422 retryable, then the API's 500: a wrong code each time, same screen.
         for (expected in listOf("Invalid verification code.", "Invalid verification code.")) {
@@ -276,6 +313,24 @@ class StepsContractTest {
         advanceTimeBy(540_001)
         runCurrent()
         assertEquals("3ds_timeout", assertIs<SheetScreen.Failed>(waiting.screen.value).error.code)
+
+        // The code expires while it is being checked: the answer decides first.
+        for ((answer, expected) in listOf("3ds-verify-202" to CheckoutState.VERIFYING, "3ds-verify-422-invalid-code" to CheckoutState.FAILED)) {
+            val api = FakeApi()
+                .on("POST /pay/process", Fixtures.response("process-requires-3ds-sandbox"))
+                .on("POST /pay/3ds/verify", Fixtures.response(answer).let { FakeResponse(it.status, it.body, delayMs = 30_000) })
+            val step = sandboxCard(api)
+            advanceTimeBy(590_000)
+            step.setStepField("code", "123456")
+            step.submitStep()
+            advanceTimeBy(15_000)
+            runCurrent()
+            assertEquals(CheckoutState.VERIFYING, step.state, "not failed while its verify runs")
+            advanceTimeBy(20_000)
+            runCurrent()
+            assertEquals(expected, step.state, answer)
+            if (expected == CheckoutState.FAILED) assertEquals("3ds_timeout", assertIs<SheetScreen.Failed>(step.screen.value).error.code)
+        }
     }
 
     @Test
@@ -341,6 +396,44 @@ class StepsContractTest {
                 assertIs<SheetScreen.Form>(controller.screen.value)
             }
         }
+
+        // While /complete runs, a `pending` with an earlier refusal's error_code is held back:
+        // /complete decides, and a success wins.
+        for ((complete, expected) in listOf("client-session-complete-200" to CheckoutState.SUCCESS, "client-session-complete-202" to CheckoutState.FAILED)) {
+            val api = FakeApi()
+                .on("GET /pay/session", Fixtures.response("session-cm-aggregate"))
+                .on("GET /pay/sdk-config", Fixtures.response("sdk-config-card-paystack"))
+                .on("POST /pay/client-session", Fixtures.response("client-session-start-202"))
+                .on("POST /pay/client-session/complete", Fixtures.response(complete).let { FakeResponse(it.status, it.body, delayMs = 4_000) })
+                .on("GET /pay/status", Fixtures.response("status-processing"), Fixtures.response("status-pending-attempt-refused"))
+            val (controller, _) = checkout(api, english)
+            controller.start()
+            runCurrent()
+            controller.selectMethod("card")
+            controller.payCard()
+            runCurrent()
+            controller.onReturn()
+            runCurrent()
+            assertEquals(CheckoutState.PENDING, controller.state, "the refusal waits for /complete")
+            advanceTimeBy(4_001)
+            runCurrent()
+            assertEquals(expected, controller.state, complete)
+        }
+
+        // After process death: the saved client session is completed once the payer is back.
+        val restored = FakeApi()
+            .on("GET /pay/session", Fixtures.response("session-processing-mobile-money"))
+            .on("GET /pay/sdk-config", Fixtures.response("sdk-config-sandbox"))
+            .on("GET /pay/status", Fixtures.response("status-processing"))
+            .on("POST /pay/client-session/complete", Fixtures.response("client-session-complete-200"))
+        val (revived, _) = checkout(restored, english)
+        revived.restoreClientSession("prc_saved")
+        revived.start()
+        runCurrent()
+        revived.onReturn()
+        runCurrent()
+        assertEquals("prc_saved", restored.lastBody("POST /pay/client-session/complete").getString("client_session_id"))
+        assertEquals(CheckoutState.SUCCESS, revived.state)
     }
 
     @Test

@@ -47,6 +47,16 @@ class WajubSession internal constructor(
     @Volatile
     private var cachedSession: SessionData? = null
 
+    /**
+     * A stable identity of this session's payment (a hash of its token, never
+     * the token): two sessions created for the same token share it, e.g. to
+     * key UI state.
+     */
+    val sessionKey: String by lazy {
+        java.security.MessageDigest.getInstance("SHA-256").digest(token.toByteArray(Charsets.UTF_8))
+            .take(12).joinToString("") { "%02x".format(it) }
+    }
+
     /** The language of the errors' messages: French or English. */
     var language: WajubLanguage
         get() = client.language
@@ -82,6 +92,10 @@ class WajubSession internal constructor(
      */
     suspend fun process(request: ProcessRequest): ProcessOutcome {
         val session = session()
+        // Card numbers, CVCs and PINs never go to the API in live (README §7).
+        if (!session.transaction.sandbox && carriesRawCard(request.data)) {
+            return ProcessOutcome.Failed(WajubError.of("raw_card_data_not_accepted", language))
+        }
         val channel = session.channels.firstOrNull { it.slug == request.channel }
         val mobileMoney = channel?.type?.lowercase() in setOf("mobile_money", "mobile")
         val payload = client.processPayload(request.channel, request.data)
@@ -90,7 +104,8 @@ class WajubSession internal constructor(
         } catch (failure: TransportException) {
             return ProcessOutcome.Processing(transaction = null, unansweredSince = failure.sentAt)
         }
-        if (response.status >= 500) return ProcessOutcome.Processing(transaction = null)
+        // A 5xx (502/503/504 after the retries, or a 500): unknown, as no answer.
+        if (response.status >= 500) return ProcessOutcome.Processing(transaction = null, unansweredSince = response.sentAt)
         return OutcomeMapper.process(response, mobileMoney, language) { client.errorOf(it, loading = false) }
     }
 
@@ -147,6 +162,8 @@ class WajubSession internal constructor(
         kind.fields.forEach { field -> payload.put(field, values[field].orEmpty()) }
         val call = if (kind == StepKind.ThreeDs) ApiCall.ThreeDsVerify else ApiCall.verify(kind.path)
         val response = client.send(token, call, payload)
+        // A 5xx on a step is no answer about the step (3-D Secure's is a wrong code).
+        if (kind != StepKind.ThreeDs && response.status >= 500) throw client.errorOf(response, loading = false)
         val errorOf = { r: ApiResponse -> client.errorOf(r, loading = false) }
         return if (kind == StepKind.ThreeDs) {
             OutcomeMapper.threeDs(response, language, errorOf)
@@ -175,19 +192,19 @@ class WajubSession internal constructor(
         session: SessionData,
         realtime: RealtimeOptions?,
         seenProcessing: Boolean,
-        clock: () -> Long = System::currentTimeMillis,
+        clock: () -> Long = { System.nanoTime() / 1_000_000 },
         random: Random = Random.Default,
         connector: RealtimeConnector = PusherConnector,
     ): PaymentWatcher {
-        val now = clock()
-        val expiresAt = session.transaction.expiresAt?.let { Iso8601.parse(it) }
+        // 15 minutes of the device's monotonic clock: never a server timestamp against the device's.
+        val deadline = clock() + WATCH_CAP_MS
         return PaymentWatcher(
             client = client,
             token = token,
             transactionId = session.transaction.id,
             endpoint = RealtimeEndpoint.resolve(session.echo, realtime),
             seenProcessing = seenProcessing,
-            deadline = minOf(now + WATCH_CAP_MS, expiresAt ?: Long.MAX_VALUE),
+            deadline = deadline,
             language = { language },
             schedule = PollSchedule(),
             clock = clock,
@@ -201,6 +218,12 @@ class WajubSession internal constructor(
             ),
         )
     }
+
+    private fun carriesRawCard(data: Map<*, *>): Boolean =
+        data.any { (key, value) ->
+            val name = key.toString().lowercase()
+            name in RAW_CARD_KEYS || name == "card" && value is Map<*, *> && value.keys.any { it.toString().lowercase() in CARD_FIELDS }
+        }
 
     /** `POST /pay/cancel` as the API answered it (the checkout reads a 400 itself). */
     internal suspend fun cancelRaw(): ApiResponse = client.send(token, ApiCall.Cancel, JSONObject())
@@ -350,3 +373,9 @@ class WajubSession internal constructor(
         }
     }
 }
+
+// Keys of raw card data (RawCardDataGuard): never sent in live.
+private val RAW_CARD_KEYS = setOf("card.number", "card_number", "pan", "cvv", "cvc", "cvv2", "card.cvv", "card.cvc", "pin", "card.pin")
+
+// The same fields nested under `card`.
+private val CARD_FIELDS = setOf("number", "cvv", "cvc", "pin")

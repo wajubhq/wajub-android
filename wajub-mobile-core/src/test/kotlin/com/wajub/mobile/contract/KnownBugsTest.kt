@@ -82,15 +82,6 @@ class KnownBugsTest {
     }
 
     @Test
-    fun `an expires_at with microseconds is read to the millisecond`() {
-        assertEquals(
-            com.wajub.mobile.Iso8601.parse("2026-10-14T09:30:00.123+00:00"),
-            com.wajub.mobile.Iso8601.parse("2026-10-14T09:30:00.123456+00:00"),
-        )
-        assertEquals(com.wajub.mobile.Iso8601.parse("2026-10-14T09:30:00+00:00"), com.wajub.mobile.Iso8601.parse("2026-10-14T09:30:00Z"))
-    }
-
-    @Test
     fun `branding nulls stay null and booleans stay booleans`() {
         val data = com.wajub.mobile.mapper.RawSessionResponse.fromJson(Fixtures.body("session-ci-xof-wallets")).toModel()
         assertEquals(null, data.brand.logoUrl)

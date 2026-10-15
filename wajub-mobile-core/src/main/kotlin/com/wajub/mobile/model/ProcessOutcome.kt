@@ -67,8 +67,13 @@ sealed class ProcessOutcome {
         /** `three_ds_timeout`, seconds. */
         val timeoutSeconds: Int? = null,
     ) : ProcessOutcome() {
-        /** The confirmation step this action asks for, or null for a page to open. */
-        val step: StepKind? get() = StepKind.ofAction(action)
+        /**
+         * The confirmation step this action asks for, or null for a page to open.
+         * `confirm_3ds` is the sandbox code step ([StepKind.ThreeDs]) when it comes
+         * with a `three_ds_id` and no page, 3-D Secure in the browser otherwise.
+         */
+        val step: StepKind?
+            get() = StepKind.ofAction(action)?.takeIf { it != StepKind.ThreeDs || (url == null && stepId != null) }
     }
 
     data class Failed(
@@ -104,6 +109,7 @@ enum class StepKind(
                 "confirm_phone" -> Phone
                 "confirm_birthday" -> Birthday
                 "confirm_address" -> Address
+                "confirm_3ds" -> ThreeDs
                 else -> null
             }
     }

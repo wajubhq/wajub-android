@@ -14,6 +14,18 @@ interface InstallIdStore {
     fun write(id: String)
 }
 
+/** An install id kept in memory only: a new one each time the app starts. */
+class MemoryInstallIdStore : InstallIdStore {
+    @Volatile
+    private var id: String? = null
+
+    override fun read(): String? = id
+
+    override fun write(id: String) {
+        this.id = id
+    }
+}
+
 /** An install id kept in one file. On Android: the app's no-backup files directory. */
 class FileInstallIdStore(private val file: File) : InstallIdStore {
     override fun read(): String? =
@@ -45,10 +57,18 @@ class DeviceEnvironment(
     /** `<width>x<height>` of the main display in physical pixels, portrait; null when unknown. */
     private val screen: () -> String? = { null },
     val colorDepth: Int = 24,
-    private val installIds: InstallIdStore = FileInstallIdStore(
-        File(System.getProperty("java.io.tmpdir") ?: ".", "wajub/install-id"),
-    ),
+    /**
+     * Where the install id lives. On Android `wajub-mobile-compose` keeps it in
+     * the app's no-backup files; an app using only `wajub-mobile-core` passes
+     * `FileInstallIdStore(File(context.noBackupFilesDir, "wajub-install-id"))`.
+     * Without one, a JVM keeps it under `~/.wajub`, and Android in memory only
+     * (never in the cache directory, which the system may clear).
+     */
+    private val installIds: InstallIdStore = defaultInstallIds(),
 ) {
+    @Volatile
+    private var cachedFingerprint: String? = null
+
     /** `wajub-kotlin/1.3.0 (android 14)` — sent as `X-Wajub-Client` and `_client.client`. */
     val clientHeader: String get() = "wajub-kotlin/$SDK_VERSION ($platform $osVersion)"
 
@@ -71,11 +91,19 @@ class DeviceEnvironment(
      * Hex SHA-256 of `"device:" + install id`: stable for one install, never
      * derived from a hardware or advertising id.
      */
-    @Synchronized
-    fun fingerprint(): String {
-        val id = installIds.read() ?: UUID.randomUUID().toString().also { installIds.write(it) }
-        val digest = MessageDigest.getInstance("SHA-256").digest("device:$id".toByteArray(Charsets.UTF_8))
-        return digest.joinToString("") { "%02x".format(it) }
+    fun fingerprint(): String =
+        cachedFingerprint ?: synchronized(this) {
+            cachedFingerprint ?: run {
+                val id = installIds.read() ?: UUID.randomUUID().toString().also { installIds.write(it) }
+                val digest = MessageDigest.getInstance("SHA-256").digest("device:$id".toByteArray(Charsets.UTF_8))
+                digest.joinToString("") { "%02x".format(it) }.also { cachedFingerprint = it }
+            }
+        }
+
+    /** Reads (or creates) the install id on a background thread, so payments never wait on the file. */
+    fun prewarm() {
+        if (cachedFingerprint != null) return
+        Thread({ fingerprint() }, "wajub-install-id").apply { isDaemon = true }.start()
     }
 
     /** `data._client` of `POST /pay/process`. */
@@ -89,6 +117,15 @@ class DeviceEnvironment(
     )
 
     companion object {
+        private fun onAndroid(): Boolean = runCatching { Class.forName("android.os.Build") }.isSuccess
+
+        private fun defaultInstallIds(): InstallIdStore =
+            if (onAndroid()) {
+                MemoryInstallIdStore()
+            } else {
+                FileInstallIdStore(File(System.getProperty("user.home") ?: ".", ".wajub/install-id"))
+            }
+
         // android.os.Build.VERSION.RELEASE when running on Android.
         private fun defaultOsVersion(): String =
             runCatching {

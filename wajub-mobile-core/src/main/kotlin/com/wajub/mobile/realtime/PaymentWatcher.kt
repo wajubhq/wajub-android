@@ -82,7 +82,7 @@ class PaymentWatcher internal constructor(
     private val deadline: Long,
     private val language: () -> WajubLanguage,
     private val schedule: PollSchedule = PollSchedule(),
-    private val clock: () -> Long = System::currentTimeMillis,
+    private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
     private val random: Random = Random.Default,
     private val connector: RealtimeConnector = PusherConnector,
     private val authUrl: String,

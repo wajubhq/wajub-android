@@ -106,6 +106,39 @@ class WatchingContractTest {
         assertTrue(assertIs<SheetScreen.Pending>(controller.screen.value).capped)
         controller.close()
         assertIs<CheckoutResult.Processing>(recorder.result)
+
+        // The cap is 15 minutes of the device's own clock from the attempt: never the server's
+        // expires_at against the device's time (here a phone whose clock is past the session's
+        // expires_at, its clock far from epoch 0).
+        val base = 1_791_970_200_000L + 15 * 60_000L
+        val skewed = cmApi()
+            .on("POST /pay/process", Fixtures.response("process-processing-mobile-money-sandbox"))
+            .on("GET /pay/status", Fixtures.response("status-processing"), Fixtures.response("status-processing"), Fixtures.response("status-succeeded"))
+        com.wajub.mobile.checkout.ActiveSheet.clear()
+        val clock = { base + testScheduler.currentTime }
+        skewed.clock = clock
+        val skewedEvents = Recorder()
+        val phone = com.wajub.mobile.checkout.CheckoutController(
+            session = fakeSession(skewed, clock = clock),
+            options = com.wajub.mobile.checkout.PresentOptions(sessionToken = "t", locale = "en", callbacks = skewedEvents.callbacks()),
+            scope = backgroundScope,
+            clock = clock,
+            random = Random(3),
+            connector = FakeSocket(),
+            compute = kotlinx.coroutines.test.StandardTestDispatcher(testScheduler),
+            deviceLanguage = { "en" },
+        )
+        phone.urlOpener = { true }
+        phone.start()
+        runCurrent()
+        phone.selectMethod("mobile_money")
+        phone.setPhone("670000000")
+        phone.payMobileMoney()
+        runCurrent()
+        advanceTimeBy(30_000)
+        runCurrent()
+        assertEquals(CheckoutState.SUCCESS, phone.state, "still watched, then paid")
+        assertEquals(3, skewed.count("GET /pay/status"))
     }
 
     @Test

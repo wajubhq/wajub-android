@@ -154,6 +154,35 @@ class RealtimeSubscriberTest {
     }
 
     @Test
+    fun theRealPusherClientReportsTheSubscriptionAndTheEvents() {
+        val connected = java.util.concurrent.CountDownLatch(1)
+        val events = LinkedBlockingQueue<String>()
+        val connection = com.wajub.mobile.realtime.PusherConnector.open(
+            com.wajub.mobile.realtime.RealtimeEndpoint("app_key", server.hostName, server.port, tls = false, channelPrefix = "private-payment."),
+            CHANNEL,
+            server.url("/pay/broadcasting/auth").toString(),
+            mapOf("Authorization" to "Bearer tok"),
+            object : com.wajub.mobile.realtime.RealtimeListener {
+                override fun onConnected() = connected.countDown()
+
+                override fun onDisconnected() = Unit
+
+                override fun onEvent(data: String) {
+                    events.put(data)
+                }
+            },
+        )
+        try {
+            // Told to the listener given when subscribing (the client tells no one else).
+            assertTrue(connected.await(10, TimeUnit.SECONDS), "subscription success reached the listener")
+            broadcast("succeeded")
+            assertTrue(assertNotNull(events.poll(10, TimeUnit.SECONDS)).contains("succeeded"))
+        } finally {
+            connection.close()
+        }
+    }
+
+    @Test
     fun subscribesOnThePaymentIdNotOnTheMerchantReference(): Unit = runBlocking {
         val results = watch()
 

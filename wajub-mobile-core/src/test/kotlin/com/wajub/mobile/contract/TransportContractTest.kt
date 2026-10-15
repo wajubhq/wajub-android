@@ -147,6 +147,16 @@ class TransportContractTest {
         assertEquals(expected, first)
         // Another install, another fingerprint.
         assertNotEquals(first, DeviceEnvironment(installIds = FileInstallIdStore(dir.resolve("other"))).fingerprint())
+        // Read once, then from memory; prewarmed off the calling thread.
+        var reads = 0
+        val counted = DeviceEnvironment(installIds = object : com.wajub.mobile.device.InstallIdStore {
+            override fun read(): String? = "5f0c2b1e-8d4a-4c3b-9e7f-1a2b3c4d5e6f".also { reads++ }
+            override fun write(id: String) = Unit
+        })
+        counted.prewarm()
+        val warm = counted.fingerprint()
+        assertEquals(warm, counted.fingerprint())
+        assertEquals(1, reads)
         dir.deleteRecursively()
     }
 
@@ -350,6 +360,35 @@ class TransportContractTest {
         retrying.payMobileMoney()
         runCurrent()
         assertNotEquals(firstKey, arrived.requests("POST /pay/process").last().headers["Idempotency-Key"])
+
+        // A 502/503/504 after the retries, or a 500, is no answer too: the same 60 s rule. A
+        // refusal an earlier try left on the payment (its error_code) is not news.
+        for (answer in listOf(FakeResponse.status(503), Fixtures.response("error-500-production"))) {
+            val failing = cmApi()
+                .on("POST /pay/process", Fixtures.response("process-failed-402"), answer)
+                .on("GET /pay/status", Fixtures.response("status-pending-attempt-refused"))
+            val (sheet, _) = checkout(failing, PresentOptions(sessionToken = "t", locale = "en"))
+            sheet.start()
+            runCurrent()
+            sheet.selectMethod("mobile_money")
+            sheet.setPhone("670000000")
+            sheet.payMobileMoney()
+            runCurrent()
+            assertEquals(CheckoutState.FAILED, sheet.state, "the first try is declined (insufficient_funds)")
+            sheet.tryAgain()
+            sheet.payMobileMoney()
+            advanceTimeBy(5_000)
+            runCurrent()
+            assertEquals(CheckoutState.PENDING, sheet.state)
+            advanceTimeBy(60_000)
+            runCurrent()
+            assertEquals("Connection error. Check your network.", assertIs<SheetScreen.Form>(sheet.screen.value).banner)
+            val keys = failing.requests("POST /pay/process").drop(1).map { it.headers["Idempotency-Key"] }.toSet()
+            assertEquals(1, keys.size, "the retries of the second press share its key")
+            sheet.payMobileMoney()
+            runCurrent()
+            assertEquals(keys.single(), failing.requests("POST /pay/process").last().headers["Idempotency-Key"])
+        }
     }
 
     @Test

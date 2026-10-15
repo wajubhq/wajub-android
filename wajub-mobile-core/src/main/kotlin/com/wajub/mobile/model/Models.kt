@@ -33,6 +33,24 @@ data class SessionTransaction(
     val updatedAt: String? = null,
     val terminalAt: String? = null,
 ) {
+    /** The 1.2 constructor, for Java and code compiled against 1.2. */
+    constructor(
+        id: String,
+        reference: String,
+        trxref: String? = null,
+        amount: Double,
+        amountTotal: Double? = null,
+        currency: String,
+        status: String,
+        statusLabel: String? = null,
+        sandbox: Boolean = false,
+        description: String? = null,
+        processingContext: ProcessingContext? = null,
+    ) : this(
+        id, reference, trxref, amount, amountTotal, currency, status, statusLabel, sandbox, description, processingContext,
+        amountCollected = null,
+    )
+
     /** The amount to show and charge: [amountTotal], else [amount]. */
     val payableAmount: Double get() = amountTotal ?: amount
 }
@@ -65,7 +83,15 @@ data class ProcessingContext(
     val maskedEmail: String? = null,
     /** Seconds. */
     val threeDsTimeout: Int? = null,
-)
+) {
+    /** The 1.2 constructor, for Java and code compiled against 1.2. */
+    constructor(
+        channelSlug: String? = null,
+        isMobileMoney: Boolean = false,
+        payerInstruction: String? = null,
+        actionUrl: String? = null,
+    ) : this(channelSlug, isMobileMoney, payerInstruction, actionUrl, isUssd = false)
+}
 
 data class SessionChannel(
     val id: String,
@@ -82,7 +108,21 @@ data class SessionChannel(
     val currency: String,
     /** The operators an aggregate channel (`cm.mobile`) folds; empty otherwise. */
     val operators: List<ChannelOperator> = emptyList(),
-)
+) {
+    /** The 1.2 constructor, for Java and code compiled against 1.2. */
+    constructor(
+        id: String,
+        slug: String,
+        name: String,
+        nameFr: String? = null,
+        type: String,
+        logo: String? = null,
+        countries: List<String> = emptyList(),
+        minAmount: Double? = null,
+        maxAmount: Double? = null,
+        currency: String,
+    ) : this(id, slug, name, nameFr, type, logo, countries, minAmount, maxAmount, currency, operators = emptyList())
+}
 
 /** One member of an aggregate channel. */
 data class ChannelOperator(
@@ -127,7 +167,18 @@ data class SessionData(
     val cancelUrl: String? = null,
     val savedMethods: List<SavedMethod> = emptyList(),
     val features: Map<String, Boolean> = emptyMap(),
-)
+) {
+    /** The 1.2 constructor, for Java and code compiled against 1.2. */
+    @Suppress("DEPRECATION")
+    constructor(
+        transaction: SessionTransaction,
+        channels: List<SessionChannel>,
+        locale: String = "en",
+        branding: Map<String, String?> = emptyMap(),
+        echo: EchoConfig? = null,
+        callback: String? = null,
+    ) : this(transaction, channels, locale, branding, echo, callback, sessionLocale = null)
+}
 
 /**
  * The merchant's branding (`branding` of `GET /pay/session`). Every key may be
@@ -206,14 +257,15 @@ data class SdkChannelConfig(
 )
 
 /**
- * PSP-hosted checkout session (JSON `client_session` of POST /pay/client-session).
+ * PSP-hosted checkout session (JSON `client_session` of POST /pay/client-session),
+ * from [com.wajub.mobile.WajubSession.openClientSession].
  *
  * Default flow: open [hostedUrl] in Custom Tabs, then call
- * [com.wajub.mobile.WajubSession.completeClientSession] with [id] when the payer returns.
+ * [com.wajub.mobile.WajubSession.confirmClientSession] with [id] when the payer returns.
  * Apps may instead launch the PSP's native SDK themselves — Paystack
  * ([publicKey] + [accessCode]) or Flutterwave Android ([publicKey] +
  * [encryptionKey], [reference] as tx_ref, [amount], [currency]) — and call
- * completeClientSession the same way.
+ * confirmClientSession the same way.
  */
 data class ClientSession(
     val id: String,
@@ -241,7 +293,10 @@ data class MobileMoneyInput(
     val country: String,
     /** Aggregate channels only (`cm.mobile`): the operator the payer picked (`mtn`). */
     val operator: String? = null,
-)
+) {
+    /** The 1.2 constructor, for Java and code compiled against 1.2. */
+    constructor(channelSlug: String, phone: String, country: String) : this(channelSlug, phone, country, operator = null)
+}
 
 /** `GET /pay/status`, and the data of the realtime `PaymentStatusUpdated` event. */
 data class PaymentStatus(

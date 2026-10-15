@@ -35,8 +35,6 @@ sourceSets.main {
 
 dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
-    implementation("com.squareup.moshi:moshi:1.15.1")
-    implementation("com.squareup.moshi:moshi-kotlin:1.15.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.9.0")
     implementation("org.json:json:20240303")
     implementation("com.pusher:pusher-java-client:2.4.4")

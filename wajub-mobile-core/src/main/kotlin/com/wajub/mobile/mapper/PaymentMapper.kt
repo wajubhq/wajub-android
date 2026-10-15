@@ -50,6 +50,24 @@ data class RawTransaction(
     val updatedAt: String? = null,
     val terminalAt: String? = null,
 ) {
+    /** The 1.2 constructor, for Java and code compiled against 1.2. */
+    constructor(
+        id: String,
+        reference: String,
+        trxref: String? = null,
+        amount: Double,
+        amountTotal: Double? = null,
+        currency: String,
+        status: String,
+        statusLabel: String? = null,
+        sandbox: Boolean = false,
+        description: String? = null,
+        processingContext: RawProcessingContext? = null,
+    ) : this(
+        id, reference, trxref, amount, amountTotal, currency, status, statusLabel, sandbox, description, processingContext,
+        amountCollected = null,
+    )
+
     fun toModel(): SessionTransaction = PaymentMapper.mapTransaction(this)
 
     companion object {
@@ -97,6 +115,14 @@ data class RawProcessingContext(
     val maskedEmail: String? = null,
     val threeDsTimeout: Int? = null,
 ) {
+    /** The 1.2 constructor, for Java and code compiled against 1.2. */
+    constructor(
+        channelSlug: String? = null,
+        isMobileMoney: Boolean = false,
+        payerInstruction: String? = null,
+        actionUrl: String? = null,
+    ) : this(channelSlug, isMobileMoney, payerInstruction, actionUrl, isUssd = false)
+
     fun toModel(): ProcessingContext =
         ProcessingContext(
             channelSlug, isMobileMoney, payerInstruction, actionUrl, isUssd, isBankTransfer,
@@ -133,6 +159,20 @@ data class RawChannel(
     val currency: String,
     val operators: List<ChannelOperator> = emptyList(),
 ) {
+    /** The 1.2 constructor, for Java and code compiled against 1.2. */
+    constructor(
+        id: String,
+        slug: String,
+        name: String,
+        nameFr: String? = null,
+        type: String,
+        logo: String? = null,
+        countries: List<String> = emptyList(),
+        minAmount: Double? = null,
+        maxAmount: Double? = null,
+        currency: String,
+    ) : this(id, slug, name, nameFr, type, logo, countries, minAmount, maxAmount, currency, operators = emptyList())
+
     fun toModel(): SessionChannel =
         SessionChannel(id, slug, name, nameFr, type, logo, countries, minAmount, maxAmount, currency, operators)
 
@@ -203,6 +243,16 @@ data class RawSessionResponse(
     val savedMethods: List<SavedMethod> = emptyList(),
     val features: Map<String, Boolean> = emptyMap(),
 ) {
+    /** The 1.2 constructor, for Java and code compiled against 1.2. */
+    constructor(
+        transaction: RawTransaction,
+        channels: List<RawChannel>,
+        locale: String? = null,
+        branding: Map<String, String?> = emptyMap(),
+        echo: RawEchoConfig? = null,
+        callback: String? = null,
+    ) : this(transaction, channels, locale, branding, echo, callback, brand = Branding())
+
     @Suppress("DEPRECATION")
     fun toModel(): SessionData =
         SessionData(
@@ -356,6 +406,18 @@ data class RawProcessResponse(
     val addressId: String? = null,
     val addressInstruction: String? = null,
 ) {
+    /** The 1.2 constructor, for Java and code compiled against 1.2. */
+    constructor(
+        code: Int,
+        status: String,
+        message: String,
+        action: String? = null,
+        transaction: RawTransaction? = null,
+        confirmUrl: String? = null,
+        simulatorUrl: String? = null,
+        clientSession: RawClientSession? = null,
+    ) : this(code, status, message, action, transaction, confirmUrl, simulatorUrl, clientSession, threeDsId = null)
+
     companion object {
         fun fromJson(body: JSONObject): RawProcessResponse =
             RawProcessResponse(

@@ -10,6 +10,7 @@ import com.wajub.mobile.model.WajubError
 import com.wajub.mobile.model.WajubErrorType
 import com.wajub.mobile.model.WajubLanguage
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.async
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import org.json.JSONObject
@@ -282,6 +283,16 @@ class ErrorsContractTest {
         assertIs<com.wajub.mobile.checkout.CheckoutResult.Processing>(closingEvents.result)
         assertEquals(1, slow.count("POST /pay/process"))
         assertEquals(0, slow.count("POST /pay/cancel"))
+
+        // Solving stops when it is cancelled (a sheet closed while it runs).
+        val unsolvable = com.wajub.mobile.model.AltchaChallenge("SHA-256", "0".repeat(64), "salt", "SIG", Long.MAX_VALUE)
+        val solving = kotlinx.coroutines.CoroutineScope(kotlinx.coroutines.Dispatchers.Default).async { com.wajub.mobile.checkout.Altcha.solve(unsolvable) }
+        Thread.sleep(50)
+        solving.cancel()
+        kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+            kotlinx.coroutines.withTimeout(5_000) { solving.join() }
+        }
+        assertTrue(solving.isCancelled)
     }
 
     @Test

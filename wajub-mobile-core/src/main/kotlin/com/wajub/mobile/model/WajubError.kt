@@ -42,6 +42,20 @@ class WajubError(
     /** The API's own (English) message. */
     val apiMessage: String? = null,
 ) : Exception(message) {
+    /** The 1.2 constructor, for Java and code compiled against 1.2. */
+    constructor(
+        type: WajubErrorType,
+        message: String,
+        code: String,
+        declineCode: String? = null,
+        retryable: Boolean = false,
+        param: String? = null,
+        correlationId: String? = null,
+        retryAfterSeconds: Int? = null,
+        details: Map<String, String> = emptyMap(),
+        httpStatus: Int? = null,
+    ) : this(type, message, code, declineCode, retryable, param, correlationId, retryAfterSeconds, details, httpStatus, blockReference = null)
+
     /** Always `WajubError`, as in Wajub.js. */
     val name: String get() = "WajubError"
 
