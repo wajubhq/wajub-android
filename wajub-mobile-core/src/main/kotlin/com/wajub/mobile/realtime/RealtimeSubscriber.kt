@@ -10,12 +10,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.mapNotNull
 
-/**
- * Pusher/Reverb for speed, with polling running next to it for the whole watch:
- * a socket only carries what happens after it subscribed, and a connected one
- * can still miss an event. Emits when the result changes; ends on a final one.
- */
-@Deprecated("Use WajubSession.watch(), which reports every decision of the spec.")
+/** Follows a payment: emits when the result changes and ends on a final one. */
+@Deprecated("Use WajubSession.watch().")
 class RealtimeSubscriber(
     private val client: PayClient,
     private val token: String,

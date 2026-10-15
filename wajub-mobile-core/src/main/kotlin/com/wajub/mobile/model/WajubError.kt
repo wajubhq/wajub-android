@@ -7,7 +7,7 @@ import com.wajub.mobile.mapper.str
 import org.json.JSONObject
 
 enum class WajubErrorType(
-    /** Wajub.js's name: `api_error`, `payment_error`… */
+    /** The type's name: `api_error`, `payment_error`… */
     val value: String,
 ) {
     ApiError("api_error"),
@@ -18,31 +18,31 @@ enum class WajubErrorType(
 }
 
 /**
- * Wajub.js's error shape, plus mobile fields. [message] is for the payer, in
- * the sheet's language; [apiMessage] is the API's own English text, for logs.
+ * What went wrong. [message] is for the payer, in the sheet's language;
+ * [apiMessage] is Wajub's own English text, for your logs.
  */
 class WajubError(
     val type: WajubErrorType,
     override val message: String,
-    /** A code of the catalogue (`insufficient_funds`, `session_not_found`…), or an API code passed through. */
+    /** What went wrong: `insufficient_funds`, `session_not_found`… */
     val code: String,
-    /** On a 402: the provider's decline code. */
+    /** On a decline, the reason given for it. */
     val declineCode: String? = null,
     val retryable: Boolean = false,
-    /** The field at fault, e.g. `data.phone`. */
+    /** The field at fault. */
     val param: String? = null,
-    /** The response's `X-Request-Id`. */
+    /** The request id to quote to Wajub support. */
     val correlationId: String? = null,
     val retryAfterSeconds: Int? = null,
-    /** The API's field errors, first message per field. */
+    /** The field errors, one message per field. */
     val details: Map<String, String> = emptyMap(),
     val httpStatus: Int? = null,
-    /** On `shield_blocked`: the reference to give the merchant's support. */
+    /** On `shield_blocked`: the reference to quote to support. */
     val blockReference: String? = null,
-    /** The API's own (English) message. */
+    /** Wajub's own message, in English. */
     val apiMessage: String? = null,
 ) : Exception(message) {
-    /** The 1.2 constructor, for Java and code compiled against 1.2. */
+    /** The earlier constructor, kept for Java and compiled code. */
     constructor(
         type: WajubErrorType,
         message: String,
@@ -56,10 +56,10 @@ class WajubError(
         httpStatus: Int? = null,
     ) : this(type, message, code, declineCode, retryable, param, correlationId, retryAfterSeconds, details, httpStatus, blockReference = null)
 
-    /** Always `WajubError`, as in Wajub.js. */
+    /** Always `WajubError`. */
     val name: String get() = "WajubError"
 
-    /** The errors.md shape, with Wajub.js's keys. */
+    /** The error as a map, with snake_case keys. */
     fun toMap(): Map<String, Any?> = linkedMapOf(
         "name" to name,
         "type" to type.value,
@@ -94,12 +94,7 @@ class WajubError(
         fun network(message: String = "Network error"): WajubError =
             WajubError(WajubErrorType.ApiError, message, "network_error", retryable = true)
 
-        /**
-         * The 1.x mapping of an HTTP error, kept as it was for the 1.x
-         * methods: [message] is the API's, 401/404/410 are authentication
-         * errors, and only 401/403/404/410 are final. The v2 calls use
-         * [fromResponse].
-         */
+        /** An error from an HTTP status, its [message] and its [code]. */
         fun fromHttp(
             httpStatus: Int,
             message: String,
@@ -152,8 +147,8 @@ class WajubError(
             )
         }
 
-        /** errors.md §2: an HTTP answer ≥ 400 as a [WajubError] in [language]. */
-        fun fromResponse(
+        // errors.md §2: an HTTP answer ≥ 400 as a WajubError in [language].
+        internal fun fromResponse(
             httpStatus: Int,
             body: JSONObject,
             correlationId: String?,
@@ -195,8 +190,8 @@ class WajubError(
             return draft.withMessage(text)
         }
 
-        /** A confirmation step's HTTP 200 `{status: "failed", attempts_remaining, error}`. */
-        fun fromStepFailure(body: JSONObject, language: WajubLanguage, correlationId: String? = null): WajubError {
+        // A confirmation step's HTTP 200 `{status: "failed", attempts_remaining, error}`.
+        internal fun fromStepFailure(body: JSONObject, language: WajubLanguage, correlationId: String? = null): WajubError {
             val code = body.obj("error")?.str("code") ?: "request_failed"
             val entry = ErrorCatalog.entry(code)
             val draft = WajubError(
@@ -214,7 +209,7 @@ class WajubError(
             return draft.withMessage(text)
         }
 
-        /** An error of the catalogue, built by the SDK (network, timeout, form, load). */
+        /** The error of [code], with its message in [language]. */
         fun of(
             code: String,
             language: WajubLanguage,

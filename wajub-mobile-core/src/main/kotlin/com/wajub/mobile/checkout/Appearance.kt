@@ -7,9 +7,7 @@ import kotlin.math.pow
 import kotlin.math.roundToInt
 
 /**
- * The sheet's look — Wajub.js's `AppearanceConfig`, with its keys and values,
- * so one object styles the web Components and the native sheet. Values that do
- * not parse are ignored, never an error.
+ * The sheet's look. Values that do not parse are ignored, never an error.
  */
 data class Appearance(
     /** `light`, `dark`, `auto`, `system`, or a preset: `stripe`, `night`, `flat`, `none`. */
@@ -38,8 +36,8 @@ data class Appearance(
 ) {
     companion object {
         /**
-         * From Wajub.js's object as a map (decoded JSON, remote config…):
-         * unknown keys and values of the wrong type are dropped.
+         * The same object as a map (decoded JSON, remote config…): unknown keys
+         * and values of the wrong type are dropped.
          */
         fun fromMap(map: Map<String, Any?>): Appearance =
             Appearance(
@@ -93,7 +91,7 @@ data class Appearance(
     }
 }
 
-/** Wajub.js's appearance variables, same names. */
+/** The appearance variables. */
 data class AppearanceVariables(
     val colorPrimary: String? = null,
     val colorBackground: String? = null,
@@ -141,7 +139,7 @@ data class ThemeTokens(
     val disabledBackground: Int,
 ) {
     companion object {
-        /** The web checkout's light palette (`DEFAULT_PALETTES.light`). */
+        /** The default light palette. */
         val LIGHT = ThemeTokens(
             primary = rgb(0x2563EB), primaryPressed = rgb(0x1D4ED8), onPrimary = rgb(0xFFFFFF),
             background = rgb(0xFFFFFF), surfaceRaised = rgb(0xFFFFFF), surfaceMuted = rgb(0xF5F5F5),
@@ -153,7 +151,7 @@ data class ThemeTokens(
             warning = rgb(0xB45309), warningBackground = rgb(0xFFFBEB), disabledBackground = rgb(0xF5F5F5),
         )
 
-        /** The web checkout's dark palette (`DEFAULT_PALETTES.dark`). */
+        /** The default dark palette. */
         val DARK = ThemeTokens(
             primary = rgb(0x3B82F6), primaryPressed = rgb(0x60A5FA), onPrimary = rgb(0x0A0A0A),
             background = rgb(0x0A0A0A), surfaceRaised = rgb(0x171717), surfaceMuted = rgb(0x262626),
@@ -208,9 +206,9 @@ data class ResolvedAppearance(
 )
 
 /**
- * Resolves the sheet's look (appearance.md): for each token, the host's
- * variables, then its top-level keys, the preset, the inherited app theme,
- * the merchant's branding, and the default palette of the scheme.
+ * Resolves the sheet's look: for each token, your variables, then your
+ * top-level keys, the preset, your app's theme (with `inherit`), the
+ * merchant's branding, and the default palette of the scheme.
  */
 object AppearanceResolver {
     const val MAX_RADIUS: Float = 22f
@@ -238,7 +236,7 @@ object AppearanceResolver {
         "none" to Appearance(),
     )
 
-    /** Wajub.js's preset of [name] (`stripe`, `night`, `flat`, `none`), or null. */
+    /** The preset [name] (`stripe`, `night`, `flat`, `none`), or null. */
     fun preset(name: String?): Appearance? = name?.lowercase()?.let { PRESETS[it] }
 
     /**
@@ -462,7 +460,7 @@ object AppearanceResolver {
     }
 }
 
-/** Parsers for appearance values (appearance.md §1.2): anything else is ignored. */
+/** Parsers for appearance values: anything else is ignored. */
 object AppearanceValues {
     private val rgbFunction = Regex("""^rgba?\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*(?:,\s*([0-9]*\.?[0-9]+)\s*)?\)$""")
     private val number = Regex("""^-?[0-9]*\.?[0-9]+$""")

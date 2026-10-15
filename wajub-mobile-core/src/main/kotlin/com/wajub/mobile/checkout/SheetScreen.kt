@@ -10,7 +10,7 @@ import java.text.NumberFormat
 import java.util.Currency
 import java.util.Locale
 
-/** What the sheet shows; each screen reports a [CheckoutState] (states.md §2). */
+/** What the sheet shows; each screen reports a [CheckoutState]. */
 sealed class SheetScreen {
     /** No state yet: the sheet is not ready. */
     data object Loading : SheetScreen()
@@ -26,7 +26,7 @@ sealed class SheetScreen {
         val mobileMoney: MobileMoneyForm? = null,
         val card: CardForm? = null,
         val busy: Boolean = false,
-        /** An error tied to no field (a 422 on `request`, `channel`…). */
+        /** An error tied to no field. */
         val banner: String? = null,
         /** Another method can be chosen ("Change"). */
         val canChangeMethod: Boolean = false,
@@ -41,7 +41,7 @@ sealed class SheetScreen {
     data class Step(
         val kind: StepKind,
         val stepId: String,
-        /** `otp_masked_contact`, the API's (English) instruction, or the masked email. */
+        /** Where the code was sent, the provider's instruction (in English), or the masked email. */
         val hint: String?,
         val values: Map<String, String> = emptyMap(),
         val fieldErrors: Map<String, String> = emptyMap(),
@@ -59,7 +59,7 @@ sealed class SheetScreen {
         val url: String? = null,
         /** 3-D Secure in the browser. */
         val threeDs: Boolean = false,
-        /** Watched for 15 minutes without an outcome: "you will be notified". */
+        /** No outcome after a long wait: "you will be notified". */
         val capped: Boolean = false,
     ) : SheetScreen()
 
@@ -76,7 +76,7 @@ sealed class SheetScreen {
     data class Ended(val error: WajubError, val state: CheckoutState) : SheetScreen()
 }
 
-/** The Mobile Money form (spec §6). */
+/** The Mobile Money form. */
 data class MobileMoneyForm(
     /** The countries the selector lists (ISO-2). */
     val countries: List<String>,
@@ -122,7 +122,7 @@ data class CardForm(
     val errors: Map<String, String> = emptyMap(),
 ) {
     companion object {
-        /** The sandbox test-card fields, as `/pay/process` names them. */
+        /** The sandbox test-card fields. */
         val SANDBOX_FIELDS = listOf("card.number", "card_holder", "expiry_month", "expiry_year", "cvv")
     }
 }

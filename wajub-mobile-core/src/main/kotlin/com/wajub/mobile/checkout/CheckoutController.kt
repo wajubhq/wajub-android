@@ -46,10 +46,9 @@ import java.util.logging.Logger
 import kotlin.random.Random
 
 /**
- * The payment sheet's engine, without its UI: loading, methods, forms,
- * answers, confirmation steps, watching, cancel and dismiss — the states,
- * callbacks and result of states.md. `PaymentSheet` draws [screen] and
- * forwards the payer's actions; an app can draw its own UI on it the same way.
+ * The payment sheet without its UI: it runs the payment, fires the callbacks
+ * and ends with a [CheckoutResult]. `PaymentSheet` draws [screen] and forwards
+ * the payer's actions; an app can draw its own UI on it the same way.
  *
  * Every method must be called on [scope]'s thread (the main thread), where the
  * callbacks run too. [start] once; the result arrives exactly once, through
@@ -85,7 +84,7 @@ class CheckoutController internal constructor(
 
     private val _language = MutableStateFlow(WajubLanguage.resolve(options.locale, null, deviceLanguage()))
 
-    /** The sheet's language (spec LD-09). */
+    /** The sheet's language. */
     val language: StateFlow<WajubLanguage> = _language.asStateFlow()
 
     private val _session = MutableStateFlow<SessionData?>(null)
@@ -100,12 +99,12 @@ class CheckoutController internal constructor(
 
     private val _cancellable = MutableStateFlow(false)
 
-    /** "Cancel payment" can be offered (README §14): a loaded `pending` session, nothing sent or seen processing. */
+    /** "Cancel payment" can be offered: the payment is loaded and no payment attempt is under way. */
     val cancellable: StateFlow<Boolean> = _cancellable.asStateFlow()
 
     private val _clientSession = MutableStateFlow<String?>(null)
 
-    /** The client session the payer left for (save it to complete it after process death). */
+    /** The provider's page the payer left for, if any (save it to finish the payment after the process dies). */
     val pendingClientSession: StateFlow<String?> = _clientSession.asStateFlow()
 
     private val _result = MutableStateFlow<CheckoutResult?>(null)
@@ -124,9 +123,9 @@ class CheckoutController internal constructor(
     var onFinished: ((CheckoutResult) -> Unit)? = null
 
     /**
-     * Every answer to a payment request — `/pay/process`, `/pay/client-session`,
-     * and (`completion` true) `/pay/client-session/complete` — before the
-     * sheet acts on it. The 1.x `PaymentSheet` reports its results from it.
+     * Every answer to a payment request, before the sheet acts on it;
+     * [completion] is true for the answer read once the payer is back from a
+     * provider's page.
      */
     var onAnswer: ((outcome: ProcessOutcome, completion: Boolean) -> Unit)? = null
 
@@ -227,7 +226,7 @@ class CheckoutController internal constructor(
         load()
     }
 
-    /** Retry of a load error (`load_error`, `ready_timeout`): the requests start again. */
+    /** Retry of a load error (`load_error`, `ready_timeout`): the payment loads again. */
     fun retryLoad() {
         val current = _screen.value
         if (finished || current !is SheetScreen.LoadError || !current.error.retryable) return
@@ -526,7 +525,7 @@ class CheckoutController internal constructor(
 
     // ── Paying ───────────────────────────────────────────────────────────
 
-    /** Pay with the Mobile Money form, after the web checkout's checks (spec §6.3). */
+    /** Pay with the Mobile Money form, once its number and operator pass their checks. */
     fun payMobileMoney() {
         val current = _screen.value as? SheetScreen.Form ?: return
         val form = current.mobileMoney ?: return

@@ -7,15 +7,15 @@ import com.wajub.mobile.model.SdkConfig
 import com.wajub.mobile.model.SessionChannel
 import com.wajub.mobile.model.WajubLanguage
 
-/** How the card channel is paid (spec §7), first match wins. */
+/** Where the payer enters the card. */
 sealed class CardFlavor {
-    /** The PSP's hosted checkout (Paystack, Flutterwave, Adyen): `POST /pay/client-session`. */
+    /** On the payment provider's own page, after the contact fields it needs. */
     data class ClientSession(val requiredFields: List<String>) : CardFlavor()
 
-    /** Stripe's card widget makes a `pm_…`. */
+    /** In Stripe's card form. */
     data class Stripe(val publishableKey: String) : CardFlavor()
 
-    /** The PSP's card page, after the contact/billing fields it still needs. */
+    /** On the payment provider's card page, after the contact and billing fields it needs. */
     data class HostedRedirect(val requiredFields: List<String>) : CardFlavor()
 
     /** Sandbox only: the published test cards. */
@@ -24,7 +24,7 @@ sealed class CardFlavor {
     data object Hidden : CardFlavor()
 
     companion object {
-        /** `client_session`, then `stripe_elements`, `hosted_redirect`, sandbox `form`; anything else is hidden. */
+        /** Where the card of [entry] is entered; [Hidden] when the sheet cannot take it. */
         fun decide(entry: SdkChannelConfig?, sandbox: Boolean): CardFlavor {
             if (entry == null || !entry.available) return Hidden
             val contactFields = entry.requiredFields.filter { it in PaymentMapper.hostedCardFields }
@@ -51,7 +51,7 @@ data class PaymentMethod(
     /** The channels it pays through (every Mobile Money channel for `mobile_money`). */
     val channels: List<SessionChannel>,
     val cardFlavor: CardFlavor? = null,
-    /** Shown disabled when `amount_total` is outside the channel's limits. */
+    /** Shown disabled when the amount is outside these limits. */
     val minAmount: Double? = null,
     val maxAmount: Double? = null,
     /** The logo as a PNG: drawn when [logo] does not load. */
@@ -63,8 +63,8 @@ data class PaymentMethod(
         (minAmount != null && amount < minAmount) || (maxAmount != null && amount > maxAmount)
 }
 
-/** Which session channels the sheet offers (spec §1, §5). */
-object PaymentMethods {
+/** Which payment methods the sheet offers. */
+internal object PaymentMethods {
     /**
      * The methods, in API order: one Mobile Money method for every Mobile
      * Money channel, the card when its flavour is supported, each one-tap

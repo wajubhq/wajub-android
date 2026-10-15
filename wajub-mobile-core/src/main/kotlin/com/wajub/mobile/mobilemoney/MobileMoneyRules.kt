@@ -23,7 +23,7 @@ data class OperatorChoice(
     val logoPng: String? = null,
 )
 
-/** A form problem found before submitting (errors.md §3.3). */
+/** A form problem found before submitting. */
 data class FormIssue(
     /** `phone_required`, `invalid_phone`, `operator_mismatch`, `operator_required`. */
     val code: String,
@@ -33,7 +33,7 @@ data class FormIssue(
     val blocking: Boolean = true,
 )
 
-/** The checkout's Mobile Money form rules (spec §6.1–6.4). */
+/** The Mobile Money form's rules: countries, operators, selection and checks. */
 object MobileMoneyRules {
     fun isMobileMoney(channel: SessionChannel): Boolean =
         channel.type.equals("mobile_money", true) || channel.type.equals("mobile", true)
@@ -96,7 +96,7 @@ object MobileMoneyRules {
         return out.values.toList()
     }
 
-    /** A channel's name in the sheet's language (`name.fr` for French). */
+    /** A channel's name in the sheet's language. */
     fun channelName(channel: SessionChannel, language: WajubLanguage): String =
         if (language == WajubLanguage.Fr) channel.nameFr ?: channel.name else channel.name
 
@@ -111,7 +111,7 @@ object MobileMoneyRules {
     }
 
     /**
-     * Checks the form before submitting, in the web checkout's order:
+     * Checks the form before submitting, in this order:
      * `phone_required`, `invalid_phone`, `operator_mismatch`, `operator_required`.
      * In sandbox a mismatch does not block (test prefixes follow no real plan).
      */
@@ -149,7 +149,7 @@ object MobileMoneyRules {
         return if (pickedByHand || detected == selected) selected else null
     }
 
-    /** `data` of a Mobile Money charge, without `_client`, `return_url` and `altcha`. */
+    /** The data of a Mobile Money payment, from the form. */
     fun requestData(choice: OperatorChoice, phone: String, country: MobileMoneyCountry, pickedByHand: Boolean): Map<String, Any?> {
         val detected = MobileMoney.detectOperator(phone, country)
         return buildMap {

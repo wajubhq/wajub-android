@@ -76,13 +76,11 @@ fun PaymentSheet(session: WajubSession, options: PresentOptions = PresentOptions
 }
 
 /**
- * The 1.x sheet, with its 1.x callbacks: [onResult] receives each answer to a
- * payment request, as in 1.x (`RequiresAction` for a push approval or a
- * provider page, `Complete`, `Processing`, `Failed` for a step it cannot take,
- * the outcome of a card paid on the provider's page); [onDismiss] fires when
- * the payer closes it, and the payment is cancelled then only when nothing was
- * submitted. Redirects, approvals, confirmation steps and watching happen in
- * the sheet.
+ * The sheet with its earlier callbacks: [onResult] receives each answer to a
+ * payment request (`RequiresAction` for a push approval or a provider's page,
+ * `Complete`, `Processing`, `Failed` for a step it cannot take, the outcome of
+ * a card paid on the provider's page); [onDismiss] fires when the payer closes
+ * it, and the payment is cancelled then only when nothing was submitted.
  */
 @Deprecated("Use PaymentSheet(session, PresentOptions(), onComplete): one CheckoutResult when the sheet closes, saying why.")
 @Composable

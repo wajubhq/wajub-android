@@ -36,7 +36,7 @@ data class BrandBadge(
     val background: String,
 )
 
-/** The shared Mobile Money tables (`mobile-money.json`, synced from the spec). */
+/** The Mobile Money tables: countries, dial codes, number lengths and operators. */
 class MobileMoneyData internal constructor(
     val schemaVersion: Int,
     val countries: Map<String, MobileMoneyCountry>,
@@ -63,7 +63,7 @@ class MobileMoneyData internal constructor(
     internal fun looseValid(digits: Int): Boolean = digits in looseMin..looseMax
 
     companion object {
-        /** The only schema this SDK reads (spec MM-09). */
+        /** The only version of the tables this SDK reads. */
         const val SUPPORTED_SCHEMA_VERSION: Int = 1
 
         fun parse(text: String): MobileMoneyData {
@@ -128,9 +128,8 @@ class MobileMoneyData internal constructor(
 }
 
 /**
- * The checkout's Mobile Money rules (spec §6): number clean-up, validity,
- * operator detection, E.164 and the as-you-type format — the algorithms of
- * `mobile-money.json`, applied to its tables.
+ * The Mobile Money number rules: clean-up, validity, operator detection,
+ * international format and the as-you-type format.
  */
 object MobileMoney {
     private const val RESOURCE = "/com/wajub/mobile/mobile-money.json"

@@ -19,7 +19,7 @@ import kotlin.random.Random
 /** The longest a watch runs without an outcome (spec §13.2). */
 internal const val WATCH_CAP_MS: Long = 15 * 60 * 1000L
 
-/** What watching a payment reports (spec §13). */
+/** What watching a payment reports. */
 sealed class WatchEvent {
     /** A status that decides nothing yet: `processing`, `partial`, or a `pending` left by an earlier attempt. */
     data class StatusChanged(val status: PaymentStatus) : WatchEvent()
@@ -37,10 +37,10 @@ sealed class WatchEvent {
     /** Cancelled: refused on the phone, or cancelled elsewhere (`payment_cancelled`). */
     data class Cancelled(val error: WajubError) : WatchEvent()
 
-    /** Expired: an approval nobody answered (`session_expired`), or a 410 (`session_terminal_expired`). */
+    /** Expired: an approval nobody answered (`session_expired`), or a payment that has ended (`session_terminal_expired`). */
     data class Expired(val error: WajubError) : WatchEvent()
 
-    /** The watch reached its cap (15 minutes, or `expires_at`) without an outcome: still processing. */
+    /** No outcome after a long wait: the payment may still move. Confirm on your server. */
     data object StillProcessing : WatchEvent()
 
     val isFinal: Boolean get() = this !is StatusChanged
@@ -68,10 +68,8 @@ internal data class PollSchedule(
 }
 
 /**
- * Watches a payment until it decides: `GET /pay/status` on a schedule, and
- * the Pusher/Reverb socket next to it when the session has one — a socket
- * only carries what happens after it subscribed, and can drop an event.
- * Collect [events] to start; stop collecting to stop (the socket closes).
+ * Watches a payment until it decides. Collect [events] to start; stop
+ * collecting to stop.
  */
 class PaymentWatcher internal constructor(
     private val client: PayClient,
@@ -108,7 +106,7 @@ class PaymentWatcher internal constructor(
         seenProcessing = true
     }
 
-    /** Polls at once (the payer came back from a browser, or the app to the foreground). */
+    /** Checks the payment now (the payer came back from a browser, or the app to the foreground). */
     fun pollNow() {
         signals.trySend(Signal.Wake)
     }

@@ -36,8 +36,8 @@ import org.json.JSONObject
 import kotlin.random.Random
 
 /**
- * Session-scoped checkout client — the `/pay` API of one payment, for apps
- * that draw their own UI. `PaymentSheet` (wajub-mobile-compose) is built on it.
+ * The client of one payment, for apps that draw their own UI.
+ * `PaymentSheet` (wajub-mobile-compose) is built on it.
  */
 class WajubSession internal constructor(
     private val token: String,
@@ -77,17 +77,15 @@ class WajubSession internal constructor(
         return client.fetchSession(token).also { cachedSession = it }
     }
 
-    /** Per-channel PSP tokenizer configuration. */
+    /** How each payment method of this payment is paid. */
     suspend fun getSdkConfig(): SdkConfig = client.getSdkConfig(token)
 
-    /** `GET /pay/status`: the payment's status, and why an attempt was refused. */
+    /** The payment's status, and why an attempt was refused. */
     suspend fun status(): PaymentStatus = OutcomeMapper.status(client.expectSuccess(client.send(token, ApiCall.Status)))
 
     /**
-     * `POST /pay/process`, mapped as the spec says (§9). `data._client` (the
-     * device signals) is added. The request's automatic retries reuse its
-     * Idempotency-Key; an answer that never came, or a 5xx, is an unknown
-     * outcome: [ProcessOutcome.Processing] without a transaction — watch the status.
+     * Pays with [request]. [ProcessOutcome.Processing] without a transaction
+     * means the outcome is not known yet: watch the payment, never show a failure.
      */
     suspend fun process(request: ProcessRequest): ProcessOutcome {
         val session = session()
@@ -109,11 +107,11 @@ class WajubSession internal constructor(
     }
 
     /**
-     * `POST /pay/client-session` for a card paid on the PSP's own page
-     * (sdk-config `clientSession`). [fields] are the contact/billing fields
-     * sdk-config requires (`email`, `first_name`…); [returnUrl] an https link
-     * back into the app. Open the [ProcessOutcome.RequiresAction.url], then
-     * call [confirmClientSession] when the payer is back.
+     * Starts a card payment on the payment provider's own page. [fields] are the
+     * contact and billing fields the card method asks for (`email`,
+     * `first_name`…); [returnUrl] an https link back into the app. Open the
+     * [ProcessOutcome.RequiresAction.url], then call [confirmClientSession]
+     * when the payer is back.
      */
     suspend fun openClientSession(
         fields: Map<String, String> = emptyMap(),
@@ -134,10 +132,9 @@ class WajubSession internal constructor(
     }
 
     /**
-     * `POST /pay/client-session/complete` once the payer is back from the PSP:
-     * [ProcessOutcome.Complete] when paid, [ProcessOutcome.Processing] while the
-     * PSP has not settled it (keep watching), [ProcessOutcome.Failed] for a
-     * decline (402) or an expired session (`client_session_expired`).
+     * Once the payer is back from the provider's page: [ProcessOutcome.Complete]
+     * when paid, [ProcessOutcome.Processing] while it is not settled yet (keep
+     * watching), [ProcessOutcome.Failed] for a decline or an expired page.
      */
     suspend fun confirmClientSession(clientSessionId: String): ProcessOutcome {
         val payload = JSONObject().put("client_session_id", clientSessionId)
@@ -171,7 +168,7 @@ class WajubSession internal constructor(
         }
     }
 
-    /** Asks for a new code (`/pay/{kind}/resend`, `/pay/3ds/send`); returns the masked email 3-D Secure names. */
+    /** Asks for a new code; for the sandbox 3-D Secure code, returns the masked email it was sent to. */
     suspend fun resendStep(kind: StepKind, stepId: String): String? {
         val call = if (kind == StepKind.ThreeDs) ApiCall.ThreeDsSend else ApiCall.resend(kind.path)
         return client.expectSuccess(client.send(token, call, JSONObject().put(kind.idKey, stepId))).str("masked_email")
@@ -239,7 +236,7 @@ class WajubSession internal constructor(
         return PaymentMapper.mapProcessResponse(raw, "mobile_money")
     }
 
-    /** Stripe tokenized card — `payment_method_id` from [StripeTokenizer]. */
+    /** A card collected with Stripe's card form: [paymentMethodId] from `StripeTokenizer`. */
     @Deprecated("Use process(ProcessRequest(channelSlug, mapOf(\"payment_method_id\" to paymentMethodId))).")
     suspend fun payCard(channelSlug: String, paymentMethodId: String, cardholderName: String? = null): PaymentResult {
         loadSession()
@@ -252,10 +249,9 @@ class WajubSession internal constructor(
     }
 
     /**
-     * Card on a `hosted_redirect` channel (PayPal, Mollie, Paddle, Kkiapay, FedaPay,
-     * PayDunya, CinetPay): returns [PaymentResult.RequiresAction] redirecting to the
-     * PSP's own card page. [billing] must carry every field the channel's
-     * `requiredFields` lists (see [PaymentMapper.hostedCardFields]).
+     * A card paid on the payment provider's page: returns
+     * [PaymentResult.RequiresAction] with that page. [billing] carries every
+     * field the card method asks for (see [PaymentMapper.hostedCardFields]).
      */
     @Deprecated("Use process(ProcessRequest(channelSlug, PaymentMapper.buildHostedCardRequest(billing))).")
     suspend fun payCardHostedRedirect(channelSlug: String, billing: Map<String, String> = emptyMap()): PaymentResult {
@@ -265,8 +261,7 @@ class WajubSession internal constructor(
     }
 
     /**
-     * One-tap wallet channel (`sdk-config` `form`, no `requiredFields`, channel type
-     * `wallet` — e.g. Djamo): returns [PaymentResult.RequiresAction] redirecting to the
+     * A wallet paid in one tap: returns [PaymentResult.RequiresAction] with the
      * wallet's payment page, which opens the wallet app.
      */
     @Deprecated("Use process(ProcessRequest(channelSlug)).")
@@ -276,7 +271,7 @@ class WajubSession internal constructor(
         return process(channelSlug, emptyMap())
     }
 
-    /** Generic process call for advanced integrations (Stripe adapter, etc.). */
+    /** Pays through [channel] with [data]. */
     @Deprecated("Use process(ProcessRequest(channel, data)), which maps every answer of the API (ProcessOutcome).")
     suspend fun process(channel: String, data: Map<String, Any?>): PaymentResult {
         val raw = client.process(token, channel, data)
@@ -285,16 +280,14 @@ class WajubSession internal constructor(
     }
 
     /**
-     * Opens (or re-serves) a PSP-hosted checkout for [channel] — for channels whose
-     * `sdk-config` entry has `clientSession == true` (Paystack / Flutterwave cards).
-     * Returns [PaymentResult.RequiresAction] with [com.wajub.mobile.model.ActionKind.ClientSession]
-     * and a [com.wajub.mobile.model.ClientSession]: open its `hostedUrl` in Custom Tabs
-     * (or launch the PSP's native SDK yourself), then call [completeClientSession].
+     * Starts a card payment on the payment provider's page. Returns
+     * [PaymentResult.RequiresAction] with [com.wajub.mobile.model.ActionKind.ClientSession]
+     * and a [com.wajub.mobile.model.ClientSession]: open its `hostedUrl` in
+     * Custom Tabs, then call [completeClientSession].
      *
-     * [email] is required by Paystack/Flutterwave when the transaction has no customer
-     * email. [returnUrl] (http/https, e.g. an app link) is where the PSP's hosted page
-     * redirects after payment. [restart] replaces a session that died on the PSP side —
-     * the backend re-verifies the old one first.
+     * [email] is needed when the payment has no customer email. [returnUrl]
+     * (http/https, e.g. an app link) is where the page sends the payer after
+     * paying. [restart] replaces a page that can no longer be used.
      */
     @Deprecated("Use openClientSession(), which maps every answer of the API (ProcessOutcome).")
     suspend fun startClientSession(
@@ -310,10 +303,10 @@ class WajubSession internal constructor(
     }
 
     /**
-     * Verifies a client session once the payer is back from the PSP's UI.
-     * [PaymentResult.Complete] when confirmed, [PaymentResult.Processing] while the PSP
-     * hasn't settled it yet (keep [watchStatus] running — its webhook will), and a
-     * thrown [com.wajub.mobile.model.WajubError] (HTTP 402) when the PSP reports it failed.
+     * Once the payer is back from the provider's page: [PaymentResult.Complete]
+     * when paid, [PaymentResult.Processing] while it is not settled yet (keep
+     * [watchStatus] running), and a thrown [com.wajub.mobile.model.WajubError]
+     * when it was declined.
      */
     @Deprecated("Use confirmClientSession(), which maps every answer of the API (ProcessOutcome).")
     suspend fun completeClientSession(clientSessionId: String): PaymentResult {
@@ -321,15 +314,14 @@ class WajubSession internal constructor(
         return PaymentMapper.mapProcessResponse(raw, "card")
     }
 
-    /** Cancels the checkout session (`POST /pay/cancel`); returns the merchant's `redirect_url`. */
+    /** Cancels the payment; returns the merchant's redirect URL. */
     suspend fun cancel(): String? = client.cancel(token).redirectUrl
 
     /**
-     * For a payment sheet the payer closed. When nothing had been [submitted],
-     * the payment is cancelled on Wajub too (`POST /pay/cancel`), as the hosted
-     * checkout does; an attempt under way is left alone, since a Mobile Money
-     * approval can still land. Best effort, in the background: closing the
-     * sheet never waits on it, and a failure is ignored.
+     * For a payment sheet of your own that the payer closed. When nothing had
+     * been [submitted], the payment is cancelled; an attempt under way is left
+     * alone, since a Mobile Money approval can still land. Done in the
+     * background: closing the sheet never waits on it, and a failure is ignored.
      */
     fun cancelIfNothingSubmitted(
         submitted: Boolean,
@@ -339,18 +331,15 @@ class WajubSession internal constructor(
         return scope.launch { runCatching { cancel() } }
     }
 
-    /**
-     * Polls `GET /pay/status`, with Pusher/Reverb next to it when `echo` is
-     * configured. Emits when the result changes and ends on a final one.
-     */
-    @Deprecated("Use watch(), whose events follow every decision of the spec.")
+    /** Follows the payment: emits when the result changes and ends on a final one. */
+    @Deprecated("Use watch().")
     @Suppress("DEPRECATION")
     suspend fun watchStatus(intervalMs: Long = 5_000L): Flow<PaymentResult> {
         val session = loadSession()
         return com.wajub.mobile.realtime.RealtimeSubscriber(client, token, session, intervalMs).subscribe()
     }
 
-    /** Legacy polling-only API. */
+    /** Follows the payment, checking every [intervalMs]: emits when the result changes and ends on a final one. */
     @Deprecated("Use watch().")
     @Suppress("DEPRECATION")
     fun watchStatusPolling(intervalMs: Long = 5_000L): Flow<PaymentResult> =

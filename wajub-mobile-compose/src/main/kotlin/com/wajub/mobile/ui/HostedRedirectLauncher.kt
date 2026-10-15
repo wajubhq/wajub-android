@@ -7,8 +7,9 @@ import android.content.Intent
 import android.net.Uri
 import androidx.browser.customtabs.CustomTabsIntent
 
-/** Opens PSP URLs in Chrome Custom Tabs — never an embedded WebView. */
+/** Opens a payment provider's page in Custom Tabs, never in a WebView. */
 object HostedRedirectLauncher {
+    /** Opens [url]; false when no browser can. */
     fun open(context: Context, url: String): Boolean {
         val uri = Uri.parse(url)
         return try {

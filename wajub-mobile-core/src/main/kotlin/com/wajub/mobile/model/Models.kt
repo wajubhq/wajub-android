@@ -1,13 +1,12 @@
 package com.wajub.mobile.model
 
 /**
- * The payment, as `GET /pay/session` and the `/pay/process` answers give it.
- * Amounts are major units (25000 for 25 000 XAF).
+ * The payment. Amounts are major units (25000 for 25 000 XAF).
  */
 data class SessionTransaction(
-    /** Wajub's payment id (`trx_…`): the realtime channel and [com.wajub.mobile.checkout.PaymentSuccess.id]. */
+    /** Wajub's payment id (`trx_…`), as in [com.wajub.mobile.checkout.PaymentSuccess.id]. */
     val id: String,
-    /** The merchant's own reference. Not the `reference` of `GET /pay/status`, which is [id]. */
+    /** The merchant's own reference. */
     val reference: String,
     val trxref: String? = null,
     val amount: Double,
@@ -35,7 +34,7 @@ data class SessionTransaction(
     /** The last refusal of an attempt (`insufficient_funds`…) while the payment is back to `pending`. */
     val errorCode: String? = null,
 ) {
-    /** The 1.2 constructor, for Java and code compiled against 1.2. */
+    /** The earlier constructor, kept for Java and compiled code. */
     constructor(
         id: String,
         reference: String,
@@ -57,8 +56,8 @@ data class SessionTransaction(
     val payableAmount: Double get() = amountTotal ?: amount
 
     /**
-     * The 1.2 `copy`, for Java and code compiled against 1.2. It keeps the
-     * fields 1.3 added; Kotlin code names the arguments it changes instead.
+     * The earlier `copy`, kept for Java and compiled code. It keeps the
+     * newer fields; Kotlin code names the arguments it changes instead.
      */
     fun copy(
         id: String,
@@ -139,7 +138,7 @@ data class ProcessingContext(
     /** Seconds. */
     val threeDsTimeout: Int? = null,
 ) {
-    /** The 1.2 constructor, for Java and code compiled against 1.2. */
+    /** The earlier constructor, kept for Java and compiled code. */
     constructor(
         channelSlug: String? = null,
         isMobileMoney: Boolean = false,
@@ -148,8 +147,8 @@ data class ProcessingContext(
     ) : this(channelSlug, isMobileMoney, payerInstruction, actionUrl, isUssd = false)
 
     /**
-     * The 1.2 `copy`, for Java and code compiled against 1.2. It keeps the
-     * fields 1.3 added; Kotlin code names the arguments it changes instead.
+     * The earlier `copy`, kept for Java and compiled code. It keeps the
+     * newer fields; Kotlin code names the arguments it changes instead.
      */
     fun copy(
         channelSlug: String?,
@@ -198,7 +197,7 @@ data class SessionChannel(
     /** The logo as a PNG (`logo` is mostly an SVG), when there is one. */
     val logoPng: String? = null,
 ) {
-    /** The 1.2 constructor, for Java and code compiled against 1.2. */
+    /** The earlier constructor, kept for Java and compiled code. */
     constructor(
         id: String,
         slug: String,
@@ -213,8 +212,8 @@ data class SessionChannel(
     ) : this(id, slug, name, nameFr, type, logo, countries, minAmount, maxAmount, currency, operators = emptyList())
 
     /**
-     * The 1.2 `copy`, for Java and code compiled against 1.2. It keeps the
-     * fields 1.3 added; Kotlin code names the arguments it changes instead.
+     * The earlier `copy`, kept for Java and compiled code. It keeps the
+     * newer fields; Kotlin code names the arguments it changes instead.
      */
     fun copy(
         id: String,
@@ -276,7 +275,7 @@ data class ChannelOperator(
 )
 
 data class EchoConfig(
-    /** Empty when the API has no broadcasting key: polling only. */
+    /** Empty when there is none. */
     val key: String,
     /** With its scheme: `wss://ws.wajub.com` (TLS) or `ws://…` (plain). */
     val wsHost: String,
@@ -309,7 +308,7 @@ data class SessionData(
     val savedMethods: List<SavedMethod> = emptyList(),
     val features: Map<String, Boolean> = emptyMap(),
 ) {
-    /** The 1.2 constructor, for Java and code compiled against 1.2. */
+    /** The earlier constructor, kept for Java and compiled code. */
     @Suppress("DEPRECATION")
     constructor(
         transaction: SessionTransaction,
@@ -321,8 +320,8 @@ data class SessionData(
     ) : this(transaction, channels, locale, branding, echo, callback, sessionLocale = null)
 
     /**
-     * The 1.2 `copy`, for Java and code compiled against 1.2. It keeps the
-     * fields 1.3 added; Kotlin code names the arguments it changes instead.
+     * The earlier `copy`, kept for Java and compiled code. It keeps the
+     * newer fields; Kotlin code names the arguments it changes instead.
      */
     fun copy(
         transaction: SessionTransaction,
@@ -360,8 +359,8 @@ data class SessionData(
 }
 
 /**
- * The merchant's branding (`branding` of `GET /pay/session`). Every key may be
- * missing; colours are as the dashboard stored them (`#0F766E`).
+ * The merchant's branding from the Dashboard. Every value may be missing;
+ * colours are as the Dashboard stored them (`#0F766E`).
  */
 data class Branding(
     val primaryColor: String? = null,
@@ -388,7 +387,7 @@ data class Branding(
     val shadow: String? = null,
     /** 0–100. */
     val overlayIntensity: Int? = null,
-    /** Given as an integer or a string by the API (`600`, `"400"`). */
+    /** A font weight: `600`, `400`. */
     val fontWeightHeading: String? = null,
     val fontWeightBody: String? = null,
     val separatorColor: String? = null,
@@ -420,10 +419,8 @@ data class SavedMethod(
 )
 
 /**
- * `sdk` flavors: `form`, `stripe_elements`, `hosted_redirect`, `adyen_custom_card`
- * (not supported natively — needs Adyen's client-side encryption).
- * `provider` is only a PREDICTION of who takes the channel; the pinned,
- * authoritative provider is [ClientSession.provider].
+ * How one payment method is paid: whether it is [available], the fields it
+ * asks for, and, for a card in Stripe's form, its [publishableKey].
  */
 data class SdkChannelConfig(
     val available: Boolean,
@@ -431,27 +428,22 @@ data class SdkChannelConfig(
     val sdk: String? = null,
     val publishableKey: String? = null,
     val requiredFields: List<String> = emptyList(),
-    /** JSON `client_session` — POST /pay/client-session can hand this channel to the PSP's own hosted checkout. */
+    /** The card is paid on the payment provider's own page. */
     val clientSession: Boolean = false,
 )
 
 /**
- * PSP-hosted checkout session (JSON `client_session` of POST /pay/client-session),
- * from [com.wajub.mobile.WajubSession.openClientSession].
- *
- * Default flow: open [hostedUrl] in Custom Tabs, then call
- * [com.wajub.mobile.WajubSession.confirmClientSession] with [id] when the payer returns.
- * Apps may instead launch the PSP's native SDK themselves — Paystack
- * ([publicKey] + [accessCode]) or Flutterwave Android ([publicKey] +
- * [encryptionKey], [reference] as tx_ref, [amount], [currency]) — and call
- * confirmClientSession the same way.
+ * A card payment on the payment provider's page, from
+ * [com.wajub.mobile.WajubSession.openClientSession]: open [hostedUrl] in Custom
+ * Tabs, then call [com.wajub.mobile.WajubSession.confirmClientSession] with
+ * [id] when the payer returns.
  */
 data class ClientSession(
     val id: String,
     val provider: String,
-    /** PSP-side reference (Paystack `reference`, Flutterwave `tx_ref`). */
+    /** The provider's reference. */
     val reference: String? = null,
-    /** In the PSP's own units (Paystack: subunit; Flutterwave: major). */
+    /** In the provider's own units. */
     val amount: Double? = null,
     val currency: String? = null,
     val hostedUrl: String? = null,
@@ -460,7 +452,7 @@ data class ClientSession(
     val encryptionKey: String? = null,
 )
 
-/** `GET /pay/sdk-config`: keyed by raw channel slug (`cm.mtn`, never `cm.mobile`). */
+/** How each payment method of a payment is paid, by channel. */
 data class SdkConfig(
     val channels: Map<String, SdkChannelConfig>,
 )
@@ -473,12 +465,12 @@ data class MobileMoneyInput(
     /** Aggregate channels only (`cm.mobile`): the operator the payer picked (`mtn`). */
     val operator: String? = null,
 ) {
-    /** The 1.2 constructor, for Java and code compiled against 1.2. */
+    /** The earlier constructor, kept for Java and compiled code. */
     constructor(channelSlug: String, phone: String, country: String) : this(channelSlug, phone, country, operator = null)
 
     /**
-     * The 1.2 `copy`, for Java and code compiled against 1.2. It keeps the
-     * fields 1.3 added; Kotlin code names the arguments it changes instead.
+     * The earlier `copy`, kept for Java and compiled code. It keeps the
+     * newer fields; Kotlin code names the arguments it changes instead.
      */
     fun copy(
         channelSlug: String,
@@ -506,21 +498,21 @@ data class MobileMoneyInput(
     }
 }
 
-/** `GET /pay/status`, and the data of the realtime `PaymentStatusUpdated` event. */
+/** The payment's status. */
 data class PaymentStatus(
     /** Wajub's payment id — not the merchant's reference. */
     val reference: String?,
     val status: String,
     /** Set when an attempt was refused and the payment is back to `pending`. */
     val errorCode: String? = null,
-    /** English. */
+    /** Why, in English. */
     val payerMessage: String? = null,
 )
 
 /**
- * One `/pay/process` answer, as the 1.x methods (`payMobileMoney`, `payCard`…)
- * report it. [ProcessOutcome] is the v2 mapping, from
- * `WajubSession.process(ProcessRequest)`.
+ * The answer to a payment, as the deprecated calls (`payMobileMoney`,
+ * `payCard`…) report it. `WajubSession.process(ProcessRequest)` answers with a
+ * [ProcessOutcome].
  */
 sealed class PaymentResult {
     data class Complete(val transaction: SessionTransaction) : PaymentResult()

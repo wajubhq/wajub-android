@@ -51,7 +51,7 @@ data class RawTransaction(
     val terminalAt: String? = null,
     val errorCode: String? = null,
 ) {
-    /** The 1.2 constructor, for Java and code compiled against 1.2. */
+    /** The earlier constructor, kept for Java and compiled code. */
     constructor(
         id: String,
         reference: String,
@@ -72,8 +72,8 @@ data class RawTransaction(
     fun toModel(): SessionTransaction = PaymentMapper.mapTransaction(this)
 
     /**
-     * The 1.2 `copy`, for Java and code compiled against 1.2. It keeps the
-     * fields 1.3 added; Kotlin code names the arguments it changes instead.
+     * The earlier `copy`, kept for Java and compiled code. It keeps the
+     * newer fields; Kotlin code names the arguments it changes instead.
      */
     fun copy(
         id: String,
@@ -168,7 +168,7 @@ data class RawProcessingContext(
     val maskedEmail: String? = null,
     val threeDsTimeout: Int? = null,
 ) {
-    /** The 1.2 constructor, for Java and code compiled against 1.2. */
+    /** The earlier constructor, kept for Java and compiled code. */
     constructor(
         channelSlug: String? = null,
         isMobileMoney: Boolean = false,
@@ -183,8 +183,8 @@ data class RawProcessingContext(
         )
 
     /**
-     * The 1.2 `copy`, for Java and code compiled against 1.2. It keeps the
-     * fields 1.3 added; Kotlin code names the arguments it changes instead.
+     * The earlier `copy`, kept for Java and compiled code. It keeps the
+     * newer fields; Kotlin code names the arguments it changes instead.
      */
     fun copy(
         channelSlug: String?,
@@ -243,7 +243,7 @@ data class RawChannel(
     val operators: List<ChannelOperator> = emptyList(),
     val logoPng: String? = null,
 ) {
-    /** The 1.2 constructor, for Java and code compiled against 1.2. */
+    /** The earlier constructor, kept for Java and compiled code. */
     constructor(
         id: String,
         slug: String,
@@ -261,8 +261,8 @@ data class RawChannel(
         SessionChannel(id, slug, name, nameFr, type, logo, countries, minAmount, maxAmount, currency, operators, logoPng)
 
     /**
-     * The 1.2 `copy`, for Java and code compiled against 1.2. It keeps the
-     * fields 1.3 added; Kotlin code names the arguments it changes instead.
+     * The earlier `copy`, kept for Java and compiled code. It keeps the
+     * newer fields; Kotlin code names the arguments it changes instead.
      */
     fun copy(
         id: String,
@@ -377,7 +377,7 @@ data class RawSessionResponse(
     val savedMethods: List<SavedMethod> = emptyList(),
     val features: Map<String, Boolean> = emptyMap(),
 ) {
-    /** The 1.2 constructor, for Java and code compiled against 1.2. */
+    /** The earlier constructor, kept for Java and compiled code. */
     constructor(
         transaction: RawTransaction,
         channels: List<RawChannel>,
@@ -407,8 +407,8 @@ data class RawSessionResponse(
         )
 
     /**
-     * The 1.2 `copy`, for Java and code compiled against 1.2. It keeps the
-     * fields 1.3 added; Kotlin code names the arguments it changes instead.
+     * The earlier `copy`, kept for Java and compiled code. It keeps the
+     * newer fields; Kotlin code names the arguments it changes instead.
      */
     fun copy(
         transaction: RawTransaction,
@@ -551,7 +551,7 @@ data class RawClientSession(
     }
 }
 
-/** A 2xx body of `/pay/process`, `/pay/client-session` or `/pay/client-session/complete`. */
+/** The answer to a payment request. */
 data class RawProcessResponse(
     val code: Int,
     val status: String,
@@ -576,7 +576,7 @@ data class RawProcessResponse(
     val addressId: String? = null,
     val addressInstruction: String? = null,
 ) {
-    /** The 1.2 constructor, for Java and code compiled against 1.2. */
+    /** The earlier constructor, kept for Java and compiled code. */
     constructor(
         code: Int,
         status: String,
@@ -589,8 +589,8 @@ data class RawProcessResponse(
     ) : this(code, status, message, action, transaction, confirmUrl, simulatorUrl, clientSession, threeDsId = null)
 
     /**
-     * The 1.2 `copy`, for Java and code compiled against 1.2. It keeps the
-     * fields 1.3 added; Kotlin code names the arguments it changes instead.
+     * The earlier `copy`, kept for Java and compiled code. It keeps the
+     * newer fields; Kotlin code names the arguments it changes instead.
      */
     fun copy(
         code: Int,
@@ -664,12 +664,7 @@ data class RawProcessResponse(
 object PaymentMapper {
     private val successStatuses = setOf("success", "successful", "succeeded", "paid", "complete")
 
-    /**
-     * A `wallet` channel payable with a single tap — nothing to collect, `/pay/process`
-     * answers with a redirect to the wallet's own page/app (e.g. Djamo). Apple Pay /
-     * Google Pay / PayPal-via-Stripe need their own SDK flavor and are excluded by
-     * `sdk == "form"` + no `requiredFields`.
-     */
+    /** A wallet paid in one tap: nothing to collect, the payer goes on to the wallet's page or app. */
     fun isRedirectWalletChannel(channel: SessionChannel, config: SdkChannelConfig?): Boolean =
         channel.type.equals("wallet", ignoreCase = true) &&
             config != null &&
@@ -677,11 +672,7 @@ object PaymentMapper {
             config.sdk == "form" &&
             config.requiredFields.isEmpty()
 
-    /**
-     * Contact/billing fields a `hosted_redirect` card PSP may still need before it
-     * opens its page — `sdk-config` lists the missing ones in `requiredFields`
-     * (Kkiapay/FedaPay/PayDunya: `email`; CinetPay: `first_name` … `zip_code`).
-     */
+    /** The contact and billing fields a card method may ask for before its payment page opens. */
     val hostedCardFields: List<String> =
         listOf("first_name", "last_name", "email", "phone", "address", "city", "country", "state", "zip_code")
 
@@ -700,7 +691,7 @@ object PaymentMapper {
         }
     }
 
-    /** `data` for a hosted-redirect card charge — flat keys, as `sdk-config` names them. */
+    /** The data of a card payment on the provider's page, from the fields the payer entered. */
     fun buildHostedCardRequest(billing: Map<String, String>): Map<String, Any?> =
         hostedCardFields.mapNotNull { field ->
             val v = billing[field]?.trim().orEmpty()
@@ -708,10 +699,9 @@ object PaymentMapper {
         }.toMap()
 
     /**
-     * `data` for a Mobile Money charge, as 1.x built it: the number as given,
-     * the ISO-2 country, and the operator an aggregate channel was given.
-     * [com.wajub.mobile.mobilemoney.MobileMoneyRules.requestData] builds the
-     * v2 request (E.164, operator hint).
+     * The data of a Mobile Money payment, with the number as given.
+     * [com.wajub.mobile.mobilemoney.MobileMoneyRules.requestData] builds it
+     * from the form, with the number in international format.
      */
     fun buildMobileMoneyRequest(input: MobileMoneyInput): Map<String, Any?> =
         buildMap {

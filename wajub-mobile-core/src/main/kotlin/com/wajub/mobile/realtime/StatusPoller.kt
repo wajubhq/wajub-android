@@ -13,9 +13,8 @@ import kotlinx.coroutines.flow.flow
 import java.io.IOException
 
 /**
- * Polling only, every [intervalMs]: emits when the result changes and ends on
- * a final one — a session that is gone (401, 403, 404, 410) included. Errors back
- * off up to a minute.
+ * Follows a payment, checking every [intervalMs]: emits when the result changes
+ * and ends on a final one, a payment that has ended included.
  */
 @Deprecated("Use WajubSession.watch().")
 class StatusPoller(

@@ -2,7 +2,7 @@ package com.wajub.mobile.model
 
 import java.util.Locale
 
-/** The sheet's language: French or English (spec LD-09). */
+/** The sheet's language: French or English. */
 enum class WajubLanguage(val code: String) {
     En("en"),
     Fr("fr"),
@@ -25,9 +25,8 @@ enum class WajubLanguage(val code: String) {
 }
 
 /**
- * The error catalogue of the spec (errors.md §3): each code's type, whether
- * the payer can try again, and its message in English and French — the web
- * checkout's own texts where it has them.
+ * Every error code: its type, whether the payer can try again, and its message
+ * in English and French.
  */
 object ErrorCatalog {
     class Entry internal constructor(
