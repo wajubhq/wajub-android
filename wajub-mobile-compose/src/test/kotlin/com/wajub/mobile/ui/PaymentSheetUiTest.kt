@@ -8,6 +8,7 @@ import androidx.activity.compose.setContent
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
@@ -186,6 +187,43 @@ class PaymentSheetUiTest {
     }
 
     @Test
+    fun `AP-08 inherits the host theme's body font`() {
+        val brand = androidx.compose.ui.text.font.FontFamily.Serif
+        var themed: ResolvedAppearance? = null
+        var plain: ResolvedAppearance? = null
+        compose.setContent {
+            MaterialTheme(typography = androidx.compose.material3.Typography(bodyLarge = androidx.compose.ui.text.TextStyle(fontFamily = brand))) {
+                themed = rememberSheetLook(Appearance(inherit = true), null)
+            }
+            // Material's own sans serif is no choice of the app's.
+            MaterialTheme {
+                plain = rememberSheetLook(Appearance(inherit = true), null)
+            }
+        }
+        compose.waitForIdle()
+        assertEquals(brand, fontFamily(assertNotNull(themed).fontFamily))
+        assertEquals(null, assertNotNull(plain).fontFamily)
+    }
+
+    @Test
+    fun `a font the app registers is the sheet's font`() {
+        val poppins = androidx.compose.ui.text.font.FontFamily.Cursive
+        WajubFonts.register("Poppins", poppins)
+        try {
+            // A CSS stack: its first family, by name, without case.
+            val look = com.wajub.mobile.checkout.AppearanceResolver.resolve(
+                Appearance(variables = com.wajub.mobile.checkout.AppearanceVariables(fontFamily = "'poppins', sans-serif")),
+                null,
+                systemDark = false,
+            )
+            assertEquals(poppins, fontFamily(look.fontFamily))
+        } finally {
+            WajubFonts.unregister("Poppins")
+        }
+        assertEquals(androidx.compose.ui.text.font.FontFamily.Default, fontFamily(null))
+    }
+
+    @Test
     fun `RD-01 opens provider pages in the system browser`() {
         val api = FakeApi()
             .on("GET /pay/session", "session-ci-xof-wallets")
@@ -267,12 +305,191 @@ class PaymentSheetUiTest {
         assertEquals("Confirm the transaction on your phone. If no prompt appears, dial *126# to complete.", approval.transaction.processingContext?.payerInstruction)
         compose.onNodeWithTag("wajub-approval").assertExists()
         idle(6)
-        assertIs<PaymentResult.Complete>(results.last(), "and now the outcome too")
+        compose.onNodeWithTag("wajub-success").assertExists()
+        assertEquals(1, results.size, "1.x reported the answers only: an app watching itself gets no second Complete")
         // The app hides it, as 1.x apps did on a result: that is no dismiss.
         shown.value = false
         idle()
         assertEquals(0, dismissed)
-        assertEquals(2, results.size)
+    }
+
+    @Test
+    fun `the 1_x sheet cancels on a dismiss only when nothing was submitted, without waiting`() {
+        // Pay pressed (a 422 sends the payer back to the form): 1.x never cancels then.
+        val api = FakeApi()
+            .on("GET /pay/session", "session-sandbox-cm")
+            .on("GET /pay/sdk-config", "sdk-config-sandbox")
+            .on("POST /pay/process", "process-422-sandbox-invalid-test-number")
+            .on("POST /pay/cancel", "cancel-200")
+        var dismissed = 0
+        val session = api.session()
+        compose.setContent {
+            @Suppress("DEPRECATION")
+            PaymentSheet(session, onDismiss = { dismissed++ }, onResult = { })
+        }
+        idle()
+        compose.onNodeWithTag("wajub-method-mobile_money").performSemanticsAction(SemanticsActions.OnClick)
+        idle()
+        compose.onNodeWithTag("wajub-phone").performTextInput("677123456")
+        compose.onNodeWithTag("wajub-pay").performSemanticsAction(SemanticsActions.OnClick)
+        idle()
+        compose.onNodeWithTag("wajub-close").performSemanticsAction(SemanticsActions.OnClick)
+        idle()
+        assertEquals(1, dismissed, "at once")
+        Thread.sleep(300)
+        assertEquals(0, api.count("POST /pay/cancel"))
+
+        // A second sheet is not rejected: the first freed its place at once.
+        val second = FakeApi().on("GET /pay/session", "session-sandbox-cm").on("GET /pay/sdk-config", "sdk-config-sandbox").on("POST /pay/cancel", "cancel-200")
+        val results = mutableListOf<CheckoutResult>()
+        val controller = controller(second.session())
+        controller.onFinished = { results += it }
+        controller.start()
+        idle()
+        assertTrue(results.isEmpty(), "not sheet_already_presented")
+    }
+
+    @Test
+    fun `the 1_x sheet dismissed before anything was submitted cancels in the background`() {
+        val api = FakeApi()
+            .on("GET /pay/session", "session-sandbox-cm")
+            .on("GET /pay/sdk-config", "sdk-config-sandbox")
+            .on("POST /pay/cancel", "cancel-200")
+        var dismissed = 0
+        val session = api.session()
+        compose.setContent {
+            @Suppress("DEPRECATION")
+            PaymentSheet(session, onDismiss = { dismissed++ }, onResult = { })
+        }
+        idle()
+        compose.onNodeWithTag("wajub-close").performSemanticsAction(SemanticsActions.OnClick)
+        idle()
+        assertEquals(1, dismissed)
+        val deadline = System.currentTimeMillis() + 5_000
+        while (api.count("POST /pay/cancel") == 0 && System.currentTimeMillis() < deadline) Thread.sleep(20)
+        assertEquals(1, api.count("POST /pay/cancel"))
+    }
+
+    @Test
+    fun `a session created again on recomposition is the same sheet`() {
+        val api = FakeApi()
+            .on("GET /pay/session", "session-ci-xof-wallets")
+            .on("GET /pay/sdk-config", "sdk-config-ci-wallets")
+            .on("POST /pay/cancel", "cancel-200")
+        val results = mutableListOf<CheckoutResult>()
+        val tick = mutableIntStateOf(0)
+        val options = PresentOptions(locale = "en", realtime = RealtimeOptions(enabled = false))
+        compose.setContent {
+            tick.intValue
+            // As integrators write it: a session created in the composable.
+            PaymentSheet(api.session(), options) { results += it }
+        }
+        idle()
+        tick.intValue++
+        idle()
+        tick.intValue++
+        idle()
+        assertTrue(results.isEmpty(), "$results")
+        assertEquals(1, api.count("GET /pay/session"))
+        compose.onNodeWithTag("wajub-method-mobile_money").assertExists()
+    }
+
+    @Test
+    fun `a 1_x session created again on recomposition is the same sheet`() {
+        val api = FakeApi()
+            .on("GET /pay/session", "session-ci-xof-wallets")
+            .on("GET /pay/sdk-config", "sdk-config-ci-wallets")
+            .on("POST /pay/cancel", "cancel-200")
+        var dismissed = 0
+        val tick = mutableIntStateOf(0)
+        compose.setContent {
+            tick.intValue
+            @Suppress("DEPRECATION")
+            PaymentSheet(api.session(), onDismiss = { dismissed++ }, onResult = { })
+        }
+        idle()
+        tick.intValue++
+        idle()
+        assertEquals(0, dismissed)
+        assertEquals(0, api.count("POST /pay/cancel"))
+        assertEquals(1, api.count("GET /pay/session"))
+    }
+
+    @Test
+    fun `the country selector opens and changes the operators`() {
+        val channels = org.json.JSONArray()
+            .put(org.json.JSONObject().put("id", "ci.orange").put("slug", "ci.orange").put("name", "Orange Money").put("type", "mobile_money").put("countries", org.json.JSONArray().put("CI")).put("currency", "XOF"))
+            .put(org.json.JSONObject().put("id", "sn.wave").put("slug", "sn.wave").put("name", "Wave").put("type", "mobile_money").put("countries", org.json.JSONArray().put("SN")).put("currency", "XOF"))
+        val api = FakeApi()
+            .on("GET /pay/session", "session-ci-xof-wallets") { it.put("channels", channels) }
+            .on("GET /pay/sdk-config", "sdk-config-ci-wallets")
+        val controller = controller(api.session())
+        show(controller)
+        controller.start()
+        idle()
+        compose.onNodeWithTag("wajub-operator-orange").assertExists()
+        compose.onNodeWithTag("wajub-country").performClick()
+        idle()
+        compose.onNodeWithTag("wajub-country-SN").performClick()
+        idle()
+        compose.onNodeWithTag("wajub-operator-wave").assertExists()
+        compose.onNodeWithTag("wajub-operator-orange").assertDoesNotExist()
+        assertEquals("SN", assertIs<SheetScreen.Form>(controller.screen.value).mobileMoney!!.country)
+    }
+
+    @Test
+    fun `the birthday step takes the date as digits and sends YYYY-MM-DD`() {
+        val api = FakeApi()
+            .on("GET /pay/session", "session-sandbox-cm")
+            .on("GET /pay/sdk-config", "sdk-config-sandbox")
+            .on("POST /pay/process", "process-requires-birthday")
+            .on("POST /pay/birthday/verify", "birthday-verify-success")
+            .on("GET /pay/status", "status-processing")
+        val controller = controller(api.session())
+        show(controller)
+        controller.start()
+        idle()
+        compose.onNodeWithTag("wajub-method-mobile_money").performClick()
+        idle()
+        compose.onNodeWithTag("wajub-phone").performTextInput("670000000")
+        compose.onNodeWithTag("wajub-pay").performScrollTo().performClick()
+        idle()
+        compose.onNodeWithTag("wajub-step-birthday").assertExists().performTextInput("19850102")
+        idle()
+        compose.onNodeWithTag("wajub-step-birthday").assertTextContains("1985-01-02")
+        // Or picked in the platform's date picker, opened on the typed date.
+        compose.onNodeWithTag("wajub-birthday-picker").performClick()
+        idle()
+        val picker = org.robolectric.shadows.ShadowDialog.getLatestDialog() as android.app.DatePickerDialog
+        assertEquals(1985, picker.datePicker.year)
+        picker.updateDate(1990, 3, 21)
+        picker.getButton(android.content.DialogInterface.BUTTON_POSITIVE).performClick()
+        idle()
+        compose.onNodeWithTag("wajub-step-birthday").assertTextContains("1990-04-21")
+        // Every step offers its resend after the countdown, not only OTP.
+        compose.onNodeWithTag("wajub-resend").assertExists()
+        compose.onNodeWithTag("wajub-verify").performScrollTo().performClick()
+        idle()
+        assertEquals("1990-04-21", api.lastBody("POST /pay/birthday/verify").getString("birthday"))
+    }
+
+    @Test
+    fun `the sheet's callbacks follow the screen across a configuration change`() {
+        val api = FakeApi().on("GET /pay/session", "session-ci-xof-wallets").on("GET /pay/sdk-config", "sdk-config-ci-wallets")
+        CallbackActivity.session = api.session()
+        CallbackActivity.log.clear()
+        val activity = Robolectric.buildActivity(CallbackActivity::class.java).setup()
+        idle()
+        activity.recreate()
+        idle()
+        val current = System.identityHashCode(activity.get())
+        activity.pause().stop().destroy()
+        idle()
+        assertEquals(
+            listOf("callbacks.onComplete in $current", "onComplete in $current"),
+            CallbackActivity.log,
+            "never in the activity the rotation destroyed",
+        )
     }
 
     @Test
@@ -306,6 +523,29 @@ class PaymentSheetUiTest {
         idle()
         assertEquals(listOf<CheckoutResult>(CheckoutResult.Cancelled(CancelReason.HostGone, null)), SheetTestActivity.results)
         assertEquals(0, api.count("POST /pay/cancel"), "the host going away never cancels the payment")
+    }
+}
+
+/** Logs which activity instance its callbacks run in. */
+class CallbackActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        val me = System.identityHashCode(this)
+        setContent {
+            PaymentSheet(
+                session!!,
+                PresentOptions(
+                    locale = "en",
+                    realtime = RealtimeOptions(enabled = false),
+                    callbacks = CheckoutCallbacks(onComplete = { log += "callbacks.onComplete in $me" }),
+                ),
+            ) { log += "onComplete in $me" }
+        }
+    }
+
+    companion object {
+        var session: WajubSession? = null
+        val log = mutableListOf<String>()
     }
 }
 

@@ -32,7 +32,8 @@ object Fixtures {
  */
 class FakeApi {
     private val routes = mutableMapOf<String, ArrayDeque<() -> Pair<Int, String>>>()
-    val requests = mutableListOf<String>()
+    val requests: MutableList<String> = java.util.concurrent.CopyOnWriteArrayList()
+    private val bodies: MutableList<Pair<String, String>> = java.util.concurrent.CopyOnWriteArrayList()
 
     fun on(route: String, fixture: String): FakeApi = answer(route) {
         val file = Fixtures.file(fixture)
@@ -40,6 +41,15 @@ class FakeApi {
     }
 
     fun fail(route: String): FakeApi = answer(route) { throw IOException("offline") }
+
+    /** A fixture's body, changed by [mutate]. */
+    fun on(route: String, fixture: String, mutate: (JSONObject) -> Unit): FakeApi = answer(route) {
+        val file = Fixtures.file(fixture)
+        val body = file.getJSONObject("body").also(mutate)
+        file.getInt("http_status") to body.toString()
+    }
+
+    fun lastBody(route: String): JSONObject = JSONObject(bodies.filter { it.first == route }.last().second)
 
     private fun answer(route: String, block: () -> Pair<Int, String>): FakeApi {
         routes.getOrPut(route) { ArrayDeque() }.add(block)
@@ -56,6 +66,8 @@ class FakeApi {
                 .addInterceptor { chain ->
                     val route = "${chain.request().method} ${chain.request().url.encodedPath}"
                     requests += route
+                    val sent = chain.request().body?.let { body -> okio.Buffer().also { body.writeTo(it) }.readUtf8() }
+                    if (sent != null) bodies += route to sent
                     val queue = routes[route] ?: error("No fake answer for $route")
                     val (status, body) = (if (queue.size > 1) queue.removeFirst() else queue.first())()
                     Response.Builder()

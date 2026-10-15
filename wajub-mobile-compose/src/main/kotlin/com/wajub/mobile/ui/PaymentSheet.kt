@@ -3,10 +3,6 @@ package com.wajub.mobile.ui
 import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
-import androidx.compose.material3.BottomSheetDefaults
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.SideEffect
@@ -15,15 +11,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.unit.dp
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.createSavedStateHandle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -31,9 +27,9 @@ import androidx.lifecycle.viewmodel.initializer
 import androidx.lifecycle.viewmodel.viewModelFactory
 import com.wajub.mobile.WajubMobile
 import com.wajub.mobile.WajubSession
+import com.wajub.mobile.checkout.CancelReason
 import com.wajub.mobile.checkout.CheckoutController
 import com.wajub.mobile.checkout.CheckoutResult
-import com.wajub.mobile.checkout.PaymentSuccess
 import com.wajub.mobile.checkout.PresentOptions
 import com.wajub.mobile.checkout.SheetScreen
 import com.wajub.mobile.model.ActionKind
@@ -43,6 +39,7 @@ import com.wajub.mobile.model.ProcessingContext
 import com.wajub.mobile.model.ProcessingKind
 import com.wajub.mobile.model.SessionTransaction
 import com.wajub.mobile.model.UNSUPPORTED_ACTION_CODE
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import java.util.UUID
 
@@ -67,49 +64,42 @@ fun PaymentSheet(options: PresentOptions, onComplete: (CheckoutResult) -> Unit) 
     SheetHost(options.sessionToken, { WajubMobile.createSession(options.sessionToken) }, options, onComplete = onComplete)
 }
 
-/** The same, on a session you created (`WajubMobile.createSession`); [PresentOptions.sessionToken] is not read. */
+/**
+ * The same, on a session you created (`WajubMobile.createSession`);
+ * [PresentOptions.sessionToken] is not read. The sheet is tied to the
+ * session's payment, not to the object: a session created again on
+ * recomposition is the same sheet.
+ */
 @Composable
 fun PaymentSheet(session: WajubSession, options: PresentOptions = PresentOptions(), onComplete: (CheckoutResult) -> Unit) {
-    SheetHost(System.identityHashCode(session), { session }, options, onComplete = onComplete)
+    SheetHost(session.sessionKey, { session }, options, onComplete = onComplete)
 }
 
 /**
- * The 1.x sheet. [onResult] is called as in 1.x, with each answer to a
- * payment request (`RequiresAction` for a push approval or a provider page,
- * `Complete`, `Processing`, `Failed` for a step it cannot take, the outcome of
- * a card paid on the provider's page) — and with `Complete` when the payment
- * succeeds; [onDismiss] when the payer closes it. Redirects, approvals,
- * confirmation steps and watching happen in the sheet.
+ * The 1.x sheet, with its 1.x callbacks: [onResult] receives each answer to a
+ * payment request, as in 1.x (`RequiresAction` for a push approval or a
+ * provider page, `Complete`, `Processing`, `Failed` for a step it cannot take,
+ * the outcome of a card paid on the provider's page); [onDismiss] fires when
+ * the payer closes it, and the payment is cancelled then only when nothing was
+ * submitted. Redirects, approvals, confirmation steps and watching happen in
+ * the sheet.
  */
-@Deprecated(
-    "Use PaymentSheet(session, PresentOptions(), onComplete): its CheckoutResult also says why a sheet closed.",
-    ReplaceWith("PaymentSheet(wajubSession, PresentOptions()) { result -> }", "com.wajub.mobile.checkout.PresentOptions"),
-)
+@Deprecated("Use PaymentSheet(session, PresentOptions(), onComplete): one CheckoutResult when the sheet closes, saying why.")
 @Composable
 fun PaymentSheet(
     wajubSession: WajubSession,
     onDismiss: () -> Unit,
     onResult: (PaymentResult) -> Unit,
 ) {
-    // As in 1.x, the success screen stays until the app hides the sheet.
-    SheetHost(System.identityHashCode(wajubSession), { wajubSession }, LEGACY_OPTIONS, LegacyCallbacks(onResult, onDismiss)) { }
+    SheetHost(wajubSession.sessionKey, { wajubSession }, LEGACY_OPTIONS, LegacyCallbacks(onResult, onDismiss)) { }
 }
 
-private val LEGACY_OPTIONS = PresentOptions(autoCloseSuccess = 0)
+// As in 1.x: the success screen stays until the app hides the sheet, and a
+// dismiss never waits for a cancel (the view model sends 1.x's own).
+private val LEGACY_OPTIONS = PresentOptions(autoCloseSuccess = 0, cancelOnDismiss = false)
 
 /** The 1.x sheet's callbacks, kept current across recompositions by the view model. */
 internal class LegacyCallbacks(val onResult: (PaymentResult) -> Unit, val onDismiss: () -> Unit)
-
-private fun paidTransaction(payment: PaymentSuccess) =
-    SessionTransaction(
-        id = payment.id,
-        reference = payment.reference.orEmpty(),
-        amount = payment.amount,
-        amountTotal = payment.amount,
-        currency = payment.currency,
-        status = "succeeded",
-        receiptUrl = payment.receiptUrl,
-    )
 
 // What 1.x's onResult received for an answer; null for what 1.x never reported
 // (refusals were shown in the form; the sheet opened provider pages itself).
@@ -151,16 +141,23 @@ private fun legacyResult(outcome: ProcessOutcome, completion: Boolean, last: Ses
     }
 }
 
-/** Keeps the sheet's engine across configuration changes; a host gone for good settles it. */
-internal class CheckoutViewModel : ViewModel() {
+/**
+ * Keeps the sheet's engine across configuration changes (and its client
+ * session across process death); a host gone for good settles it.
+ */
+internal class CheckoutViewModel(private val saved: SavedStateHandle) : ViewModel() {
     private var controller: CheckoutController? = null
-    private var completeReported = false
+    private var session: WajubSession? = null
+    private var watching: Job? = null
 
     // A result that lands while no host is attached (mid configuration change) waits for the next one.
     private var undelivered: CheckoutResult? = null
 
-    /** Set when the host itself goes away: 1.x had no callback for that. */
-    var hostLeaving = false
+    // Set when the host itself goes away: 1.x had no callback for that.
+    private var hostLeaving = false
+
+    // 1.x: a payment is cancelled on a dismiss only when nothing was ever submitted.
+    private var submitted = false
 
     var legacy: LegacyCallbacks? = null
 
@@ -170,45 +167,54 @@ internal class CheckoutViewModel : ViewModel() {
             val waiting = undelivered
             if (value != null && waiting != null) {
                 undelivered = null
+                field = null
                 value(waiting)
             }
         }
 
+    val settled: Boolean get() = controller?.result?.value != null
+
     fun controllerFor(session: () -> WajubSession, options: PresentOptions): CheckoutController =
-        controller ?: CheckoutController(session(), options, viewModelScope).also { created ->
-            controller = created
-            created.onFinished = { result ->
-                legacy?.let { closed(it, result) }
-                val host = onComplete
-                if (host != null) host(result) else undelivered = result
-                // Done: let go of the host (its lambdas, the activity behind the browser opener).
-                created.urlOpener = null
-                legacy = null
-            }
-            if (legacy != null) {
-                created.onAnswer = { outcome, completion -> legacyResult(outcome, completion, created.transaction)?.let(::report) }
-                viewModelScope.launch {
-                    created.screen.collect { screen ->
-                        if (screen is SheetScreen.Success && !completeReported) {
-                            report(PaymentResult.Complete(created.transaction ?: paidTransaction(screen.payment)))
-                        }
+        controller ?: session().let { owned ->
+            this.session = owned
+            CheckoutController(owned, options, viewModelScope).also { created ->
+                controller = created
+                saved.get<String>(CLIENT_SESSION)?.let { created.restoreClientSession(it) }
+                created.onFinished = { result -> settle(created, result) }
+                watching = viewModelScope.launch {
+                    launch { created.pendingClientSession.collect { saved[CLIENT_SESSION] = it } }
+                    if (legacy != null) {
+                        created.onAnswer = { outcome, completion -> legacyResult(outcome, completion, created.transaction)?.let { legacy?.onResult?.invoke(it) } }
+                        created.screen.collect { screen -> if (screen is SheetScreen.Form && screen.busy) submitted = true }
                     }
                 }
+                created.start()
             }
-            created.start()
         }
 
-    private fun report(result: PaymentResult) {
-        if (result is PaymentResult.Complete) completeReported = true
-        legacy?.onResult?.invoke(result)
-    }
-
-    private fun closed(callbacks: LegacyCallbacks, result: CheckoutResult) {
-        if (result is CheckoutResult.Complete && !completeReported) {
-            report(PaymentResult.Complete(result.transaction ?: paidTransaction(result.payment)))
+    private fun settle(created: CheckoutController, result: CheckoutResult) {
+        legacy?.let { callbacks ->
+            // 1.x: onDismiss when the payer closed the sheet (never when the app removed it),
+            // with 1.x's fire-and-forget cancel when nothing was submitted.
+            if (!hostLeaving) {
+                if (result is CheckoutResult.Cancelled && result.reason == CancelReason.Dismissed) {
+                    session?.cancelIfNothingSubmitted(submitted)
+                }
+                callbacks.onDismiss()
+            }
         }
-        // 1.x called onDismiss when the payer closed the sheet, never when the app removed it.
-        if (!hostLeaving) callbacks.onDismiss()
+        val host = onComplete
+        if (host != null) {
+            onComplete = null
+            host(result)
+        } else {
+            undelivered = result
+        }
+        // Done: let go of the host (its lambdas, the activity behind the browser opener).
+        created.urlOpener = null
+        legacy = null
+        saved.remove<String>(CLIENT_SESSION)
+        watching?.cancel()
     }
 
     fun hostGone() {
@@ -219,9 +225,12 @@ internal class CheckoutViewModel : ViewModel() {
     override fun onCleared() {
         hostGone()
     }
+
+    private companion object {
+        const val CLIENT_SESSION = "wajub.client_session"
+    }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SheetHost(
     key: Any,
@@ -235,25 +244,32 @@ private fun SheetHost(
     // (or shown for another payment).
     val presentation = rememberSaveable(key) { UUID.randomUUID().toString() }
     val model: CheckoutViewModel = if (LocalViewModelStoreOwner.current != null) {
-        viewModel(key = "wajub-checkout-$presentation") { CheckoutViewModel() }
+        viewModel(key = "wajub-checkout-$presentation") { CheckoutViewModel(createSavedStateHandle()) }
     } else {
         // No ViewModelStoreOwner (1.x did not need one): the sheet lives with this composition.
         val store = remember(presentation) { ViewModelStore() }
         DisposableEffect(store) { onDispose { store.clear() } }
-        remember(store) { ViewModelProvider(store, viewModelFactory { initializer { CheckoutViewModel() } })[CheckoutViewModel::class.java] }
+        remember(store) { ViewModelProvider(store, viewModelFactory { initializer { CheckoutViewModel(SavedStateHandle()) } })[CheckoutViewModel::class.java] }
     }
     val latest by rememberUpdatedState(onComplete)
     // Before the controller starts: a sheet rejected at once still reports it.
-    model.legacy = legacy
-    if (model.onComplete == null) model.onComplete = { latest(it) }
+    if (!model.settled) {
+        model.legacy = legacy
+        if (model.onComplete == null) model.onComplete = { latest(it) }
+    }
     val controller = remember(model) {
         // The device's details before the first request (the init provider may be disabled).
         WajubAndroid.install(context)
         model.controllerFor(session, options)
     }
     SideEffect {
-        model.onComplete = { latest(it) }
-        controller.urlOpener = { url -> HostedRedirectLauncher.open(context, url) }
+        if (!model.settled) {
+            model.onComplete = { latest(it) }
+            model.legacy = legacy
+            // The callbacks of the screen showing the sheet now (after a rotation, the new one's).
+            controller.callbacks = options.callbacks
+            controller.urlOpener = { url -> HostedRedirectLauncher.open(context, url) }
+        }
     }
 
     // Back in the app (browser closed, app foregrounded): read the status at once.
@@ -282,12 +298,12 @@ private fun SheetHost(
     if (closing) return
     val data by controller.sessionData.collectAsState()
     val look = rememberSheetLook(options.appearance, data?.brand)
-    ModalBottomSheet(
+    BottomSheet(
         onDismissRequest = controller::dismiss,
-        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = look.colors.background.color(),
-        tonalElevation = look.elevation.dp,
-        scrimColor = look.scrimAlpha?.let { Color.Black.copy(alpha = it) } ?: BottomSheetDefaults.ScrimColor,
+        elevation = look.elevation,
+        scrimAlpha = look.scrimAlpha,
+        radius = look.radius,
     ) {
         PaymentSheetContent(controller)
     }

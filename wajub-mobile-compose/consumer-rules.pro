@@ -1,6 +1,12 @@
-# Consumer ProGuard/R8 rules for wajub-mobile-compose.
+# Consumer R8/ProGuard rules for wajub-mobile-compose, applied to the app that
+# depends on it.
 #
-# No reflection-sensitive APIs are used directly by this module (no JSON model
-# classes, no annotation-processed code). The stripe-android and Jetpack
-# Compose dependencies ship their own consumer rules bundled in their AARs,
-# which R8 picks up automatically, so no rules need to be duplicated here.
+# This module's own code uses no reflection (its view model is built by an
+# explicit factory). stripe-android, Coil, OkHttp and Jetpack Compose ship
+# their own consumer rules. wajub-mobile-core's rules (pusher-java-client) come
+# with its jar (META-INF/proguard); they are repeated here for build setups
+# that do not read rules from plain jars.
+-keep class com.pusher.client.** { *; }
+-dontwarn org.slf4j.impl.StaticLoggerBinder
+-dontwarn org.slf4j.impl.StaticMDCBinder
+-dontwarn org.slf4j.impl.StaticMarkerBinder

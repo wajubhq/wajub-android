@@ -57,6 +57,10 @@ internal fun inheritedTheme(): InheritedTheme {
     val density = LocalDensity.current
     val small = MaterialTheme.shapes.small
     val radius = (small as? RoundedCornerShape)?.topStart?.toPx(Size(100f, 44f), density)?.let { it / density.density }
+    // The app's body font: Material's own (sans serif) says nothing.
+    val font = MaterialTheme.typography.bodyLarge.fontFamily
+        ?.takeIf { it != FontFamily.Default && it != FontFamily.SansSerif }
+        ?.let { family -> inheritedFontName(family).also { WajubFonts.register(it, family) } }
     return InheritedTheme(
         dark = colors.surface.luminance() < 0.5f,
         primary = colors.primary.toArgb(),
@@ -64,7 +68,7 @@ internal fun inheritedTheme(): InheritedTheme {
         text = colors.onSurface.toArgb(),
         textSecondary = colors.onSurfaceVariant.toArgb(),
         inputBorder = colors.outline.toArgb(),
-        fontFamily = null,
+        fontFamily = font,
         radius = radius,
     )
 }
@@ -121,9 +125,14 @@ private fun reducedMotion(context: Context): Boolean =
     runCatching { Settings.Global.getFloat(context.contentResolver, Settings.Global.ANIMATOR_DURATION_SCALE, 1f) == 0f }
         .getOrDefault(false)
 
-// The family when the app or the system ships it, else the platform's.
-private fun fontFamily(name: String?): FontFamily {
+// The inherited family travels through the resolver by this name.
+private fun inheritedFontName(family: FontFamily) = "wajub-inherited-font-${family.hashCode()}"
+
+// The family the app registered (WajubFonts) or inherited, else the system's of
+// that name, else the platform's.
+internal fun fontFamily(name: String?): FontFamily {
     if (name.isNullOrBlank()) return FontFamily.Default
+    WajubFonts.find(name)?.let { return it }
     val typeface = Typeface.create(name, Typeface.NORMAL)
     return if (typeface == null || typeface == Typeface.DEFAULT || typeface == Typeface.create(Typeface.DEFAULT, Typeface.NORMAL)) {
         FontFamily.Default

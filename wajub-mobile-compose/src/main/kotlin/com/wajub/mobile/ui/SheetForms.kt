@@ -1,27 +1,23 @@
 package com.wajub.mobile.ui
 
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowDropDown
 import androidx.compose.material.icons.filled.DateRange
-import androidx.compose.material3.DatePicker
-import androidx.compose.material3.DatePickerDialog
+import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.ExposedDropdownMenuBox
-import androidx.compose.material3.ExposedDropdownMenuDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.MenuAnchorType
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Text
-import androidx.compose.material3.TextButton
-import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -31,6 +27,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -50,10 +47,6 @@ import com.wajub.mobile.mobilemoney.MobileMoney
 import com.wajub.mobile.model.SessionData
 import com.wajub.mobile.model.StepKind
 import com.wajub.mobile.model.WajubLanguage
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
-import java.util.TimeZone
 
 @Composable
 internal fun FormScreen(controller: CheckoutController, screen: SheetScreen.Form, session: SessionData?, strings: SheetStrings, language: WajubLanguage) {
@@ -90,7 +83,6 @@ internal fun FormScreen(controller: CheckoutController, screen: SheetScreen.Form
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun MobileMoneyFields(
     controller: CheckoutController,
@@ -107,14 +99,16 @@ private fun MobileMoneyFields(
         var open by remember { mutableStateOf(false) }
         Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
             FieldLabel(strings.country)
-            ExposedDropdownMenuBox(expanded = open, onExpandedChange = { if (!busy) open = it }) {
+            // A plain menu on a read-only field (stable APIs only: Material 3's exposed
+            // dropdown is experimental and changes between releases).
+            Box {
                 val current = data.country(form.country)
                 OutlinedTextField(
                     value = current?.let { "${it.name} (${it.dialCode})" } ?: form.country.orEmpty(),
                     onValueChange = {},
                     readOnly = true,
                     singleLine = true,
-                    trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = open) },
+                    trailingIcon = { Icon(Icons.Filled.ArrowDropDown, contentDescription = null) },
                     shape = androidx.compose.foundation.shape.RoundedCornerShape(look.radius.dp),
                     colors = OutlinedTextFieldDefaults.colors(
                         focusedContainerColor = c.inputBackground.color(),
@@ -122,9 +116,16 @@ private fun MobileMoneyFields(
                         unfocusedBorderColor = c.inputBorder.color(),
                         focusedBorderColor = c.focusRing.color(),
                     ),
-                    modifier = Modifier.fillMaxWidth().menuAnchor(MenuAnchorType.PrimaryNotEditable).testTag("wajub-country"),
+                    modifier = Modifier.fillMaxWidth(),
                 )
-                ExposedDropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+                // Covers the field: a tap opens the menu.
+                Box(
+                    Modifier
+                        .matchParentSize()
+                        .clickable(enabled = !busy, role = Role.DropdownList) { open = true }
+                        .testTag("wajub-country"),
+                )
+                DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
                     for (code in form.countries) {
                         val country = data.country(code)
                         DropdownMenuItem(
@@ -269,7 +270,6 @@ private fun StripePay(controller: CheckoutController, screen: SheetScreen.Form, 
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 internal fun StepScreen(controller: CheckoutController, step: SheetScreen.Step, strings: SheetStrings) {
     val look = LocalSheetLook.current
@@ -282,7 +282,7 @@ internal fun StepScreen(controller: CheckoutController, step: SheetScreen.Step, 
         StepKind.Address -> strings.addressTitle
         StepKind.ThreeDs -> strings.threeDsTitle
     }
-    Column(verticalArrangement = Arrangement.spacedBy(look.gapRow.dp), modifier = Modifier.testTag("wajub-step-${step.kind.path}")) {
+    Column(verticalArrangement = Arrangement.spacedBy(look.gapRow.dp), modifier = Modifier.testTag("wajub-step-screen-${step.kind.path}")) {
         Text(title, style = MaterialTheme.typography.titleMedium, color = c.text.color())
         val hint = when (step.kind) {
             StepKind.Otp -> step.hint?.let { strings.otpSentTo.fill("contact" to it) }
@@ -316,15 +316,14 @@ internal fun StepScreen(controller: CheckoutController, step: SheetScreen.Step, 
         }
         PrimaryButton(if (step.busy) strings.verifying else strings.verify, controller::submitStep, busy = step.busy, tag = "wajub-verify")
         val now = rememberNow(ticking = true)
-        if (step.kind == StepKind.Otp || step.kind == StepKind.ThreeDs) {
-            val wait = ((step.resendAt - now + 999) / 1000).coerceAtLeast(0)
-            LinkButton(
-                if (wait > 0) strings.resendIn.fill("seconds" to wait) else strings.resend,
-                controller::resendStep,
-                enabled = wait == 0L && !step.busy,
-                tag = "wajub-resend",
-            )
-        }
+        // Every step has its resend endpoint (spec §10), offered after 60 s as on the web.
+        val wait = ((step.resendAt - now + 999) / 1000).coerceAtLeast(0)
+        LinkButton(
+            if (wait > 0) strings.resendIn.fill("seconds" to wait) else strings.resend,
+            controller::resendStep,
+            enabled = wait == 0L && !step.busy,
+            tag = "wajub-resend",
+        )
         step.expiresAt?.let { expires ->
             val left = ((expires - now) / 1000).coerceAtLeast(0)
             Hint(strings.expiresIn.fill("time" to "%d:%02d".format(left / 60, left % 60)), tag = "wajub-expires")
@@ -332,38 +331,45 @@ internal fun StepScreen(controller: CheckoutController, step: SheetScreen.Step, 
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun BirthdayField(value: String, error: String?, strings: SheetStrings, enabled: Boolean, onChange: (String) -> Unit) {
-    var picking by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    // Typed as digits, shown and sent as YYYY-MM-DD (the controller inserts the
+    // dashes), or picked in the platform's date picker: Material 3's is
+    // experimental and changes between releases.
     SheetTextField(
         label = strings.label("birthday"),
         value = value,
         onValueChange = onChange,
         error = error,
-        placeholder = "YYYY-MM-DD",
+        placeholder = strings.birthdayFormat,
         keyboardType = KeyboardType.Number,
         trailing = {
-            IconButton(onClick = { picking = true }, enabled = enabled, modifier = Modifier.testTag("wajub-pick-date")) {
+            IconButton(
+                onClick = { pickDate(context, value, onChange) },
+                enabled = enabled,
+                modifier = Modifier.testTag("wajub-birthday-picker"),
+            ) {
                 Icon(Icons.Filled.DateRange, contentDescription = strings.chooseDate)
             }
         },
         tag = "wajub-step-birthday",
         enabled = enabled,
     )
-    if (picking) {
-        val state = rememberDatePickerState()
-        DatePickerDialog(
-            onDismissRequest = { picking = false },
-            confirmButton = {
-                TextButton(onClick = {
-                    state.selectedDateMillis?.let { millis ->
-                        val format = SimpleDateFormat("yyyy-MM-dd", Locale.ROOT).apply { timeZone = TimeZone.getTimeZone("UTC") }
-                        onChange(format.format(Date(millis)))
-                    }
-                    picking = false
-                }) { Text("OK") }
-            },
-        ) { DatePicker(state = state) }
-    }
+}
+
+// The platform's date picker, opened on the typed date or 30 years ago.
+private fun pickDate(context: android.content.Context, value: String, onChange: (String) -> Unit) {
+    val parts = Regex("""^(\d{4})-(\d{2})-(\d{2})$""").find(value)?.groupValues
+    val today = java.util.Calendar.getInstance()
+    val year = parts?.get(1)?.toInt() ?: (today.get(java.util.Calendar.YEAR) - 30)
+    val month = parts?.get(2)?.toInt()?.minus(1) ?: today.get(java.util.Calendar.MONTH)
+    val day = parts?.get(3)?.toInt() ?: today.get(java.util.Calendar.DAY_OF_MONTH)
+    android.app.DatePickerDialog(
+        context,
+        { _, y, m, d -> onChange("%04d-%02d-%02d".format(java.util.Locale.ROOT, y, m + 1, d)) },
+        year,
+        month,
+        day,
+    ).apply { datePicker.maxDate = today.timeInMillis }.show()
 }
