@@ -161,16 +161,32 @@ internal class CheckoutViewModel(private val saved: SavedStateHandle) : ViewMode
 
     var legacy: LegacyCallbacks? = null
 
-    var onComplete: ((CheckoutResult) -> Unit)? = null
-        set(value) {
-            field = value
-            val waiting = undelivered
-            if (value != null && waiting != null) {
-                undelivered = null
-                field = null
-                value(waiting)
-            }
+    // The host's onComplete while one is attached; null between a configuration
+    // change's old and new screens.
+    private var onComplete: ((CheckoutResult) -> Unit)? = null
+    private var delivered = false
+
+    /**
+     * Attaches the showing screen's [host]. A result that settled while no
+     * screen was attached (mid configuration change) is delivered now.
+     */
+    fun attach(host: (CheckoutResult) -> Unit) {
+        if (delivered) return
+        val waiting = undelivered
+        if (waiting != null) {
+            undelivered = null
+            delivered = true
+            onComplete = null
+            host(waiting)
+        } else {
+            onComplete = host
         }
+    }
+
+    /** The screen goes away for a configuration change: a result now waits for the next one. */
+    fun detach() {
+        onComplete = null
+    }
 
     val settled: Boolean get() = controller?.result?.value != null
 
@@ -206,6 +222,7 @@ internal class CheckoutViewModel(private val saved: SavedStateHandle) : ViewMode
         val host = onComplete
         if (host != null) {
             onComplete = null
+            delivered = true
             host(result)
         } else {
             undelivered = result
@@ -255,7 +272,7 @@ private fun SheetHost(
     // Before the controller starts: a sheet rejected at once still reports it.
     if (!model.settled) {
         model.legacy = legacy
-        if (model.onComplete == null) model.onComplete = { latest(it) }
+        model.attach { latest(it) }
     }
     val controller = remember(model) {
         // The device's details before the first request (the init provider may be disabled).
@@ -263,8 +280,10 @@ private fun SheetHost(
         model.controllerFor(session, options)
     }
     SideEffect {
+        // Also after the sheet settled: a result that landed while no screen was
+        // attached (a configuration change) reaches this one.
+        model.attach { latest(it) }
         if (!model.settled) {
-            model.onComplete = { latest(it) }
             model.legacy = legacy
             // The callbacks of the screen showing the sheet now (after a rotation, the new one's).
             controller.callbacks = options.callbacks
@@ -286,7 +305,7 @@ private fun SheetHost(
     DisposableEffect(model) {
         onDispose {
             if (context.findActivity()?.isChangingConfigurations == true) {
-                model.onComplete = null
+                model.detach()
             } else {
                 model.hostGone()
             }
