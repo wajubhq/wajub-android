@@ -16,15 +16,23 @@ data class MobileMoneyCountry(
     val dialCode: String,
     /** National digits a valid number has, or null to accept 7 to 15 digits. */
     val nationalNumberLength: Int?,
-    /** Côte d'Ivoire keeps its leading 0 in E.164. */
+    /** The leading 0 is part of the number (Côte d'Ivoire, Benin): the international format keeps it. */
     val keepsTrunkZero: Boolean,
     val placeholder: String,
     val placeholderFormatted: String,
     val operators: List<String>,
     val prefixRules: List<PrefixRule>,
+    /** How a number of the earlier, shorter plan reads today (Benin), or null. */
+    val earlierNumber: EarlierNumber? = null,
 )
 
 data class PrefixRule(val startsWith: List<String>, val operator: String)
+
+/**
+ * A number of an earlier plan: [length] digits starting with one of
+ * [startsWith] take [prefix] in front (Benin: 8 digits take `01`).
+ */
+data class EarlierNumber(val length: Int, val prefix: String, val startsWith: List<String>)
 
 /** A badge drawn when an operator has no logo, or its logo does not load. */
 data class BrandBadge(
@@ -88,6 +96,11 @@ class MobileMoneyData internal constructor(
                         prefixRules = c.objects("prefix_rules").mapNotNull { rule ->
                             rule.str("operator")?.let { PrefixRule(rule.strings("starts_with"), it) }
                         },
+                        earlierNumber = c.obj("earlier_number")?.let { e ->
+                            val length = e.int("length")
+                            val prefix = e.str("prefix")
+                            if (length == null || prefix.isNullOrEmpty()) null else EarlierNumber(length, prefix, e.strings("starts_with"))
+                        },
                     )
                 }
             }
@@ -150,18 +163,27 @@ object MobileMoney {
     /** Digits only: every character but 0-9 is dropped (a `+` too). */
     fun sanitize(input: String): String = input.filter { it in '0'..'9' }
 
-    /** The number without its dial code and without leading zeros. */
+    /**
+     * The number without its dial code and without leading zeros; a number of
+     * the earlier plan reads as today's (Benin: `96 12 34 56` → `196123456`).
+     */
     fun nationalDigits(input: String, country: MobileMoneyCountry): String {
         var digits = sanitize(input)
         val dial = sanitize(country.dialCode)
         if (dial.isNotEmpty() && digits.startsWith(dial)) digits = digits.removePrefix(dial)
-        return digits.trimStart('0')
+        digits = digits.trimStart('0')
+        val earlier = country.earlierNumber
+        if (earlier != null && digits.length == earlier.length && earlier.startsWith.any { digits.startsWith(it) }) {
+            digits = earlier.prefix + digits
+        }
+        return digits
     }
 
     fun isValid(input: String, country: MobileMoneyCountry): Boolean {
         val length = country.nationalNumberLength
         return if (length != null) {
-            nationalDigits(input, country).length == length
+            val digits = nationalDigits(input, country)
+            digits.length == length && country.earlierNumber?.let { digits.startsWith(it.prefix) } != false
         } else {
             data().looseValid(sanitize(input).length)
         }
@@ -169,15 +191,17 @@ object MobileMoney {
 
     /** The operator the number's prefix names, or null. */
     fun detectOperator(input: String, country: MobileMoneyCountry): String? {
-        val digits = nationalDigits(input, country)
+        var digits = nationalDigits(input, country)
         if (digits.isEmpty()) return null
+        // A number typed the earlier way names its operator as it is typed (`96` → `196`).
+        country.earlierNumber?.let { if (!digits.startsWith(it.prefix)) digits = it.prefix + digits }
         val independent = data().operatorIndependentWallets
         return country.prefixRules.firstOrNull { rule -> rule.startsWith.any { digits.startsWith(it) } }
             ?.operator
             ?.takeIf { it !in independent }
     }
 
-    /** `+237677123456`; Côte d'Ivoire keeps its leading 0 (`+2250701020304`). */
+    /** `+237677123456`; Côte d'Ivoire and Benin keep their leading 0 (`+2250701020304`). */
     fun e164(input: String, country: MobileMoneyCountry): String =
         country.dialCode + (if (country.keepsTrunkZero) "0" else "") + nationalDigits(input, country)
 

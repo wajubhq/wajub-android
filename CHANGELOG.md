@@ -14,7 +14,9 @@
   form with the error.
 - Mobile Money is one form: the country, the operators with their logos (or a brand badge), the number
   with its dial code and formatted as typed, and the operator detected from the number. Changing the
-  country now changes the operators offered. After **Pay**, the payer sees "Approve the payment on
+  country now changes the operators offered. Côte d'Ivoire and Benin numbers have ten digits, their
+  leading 0 included; a Beninese number typed with the earlier eight digits is read with 01 in front,
+  and its MTN or Moov operator is recognised. After **Pay**, the payer sees "Approve the payment on
   your phone" with the operator's instruction, also when the sheet reopens on an approval under way.
 - Confirmation steps have their own screens: a code, the card PIN, a phone number, a date of birth
   (typed, or picked in a date picker), a billing address, and the sandbox 3-D Secure code, each with a
