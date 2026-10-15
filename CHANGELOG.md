@@ -38,18 +38,23 @@
   answers for sure, and on the approval, USSD, "Payment in progress" and step screens, a dismiss is
   `processing` and never cancels; while loading it is `cancelled` without a call; on the failure screen
   it is `failed` with that error (the cancel is still sent in the background when it can be). "Cancel
-  payment" is offered on the same terms.
+  payment" is offered on the same terms. A definitive refusal is a decline, a refusal the status
+  reports, a confirmation step over for good, a 3-D Secure code refused or timed out, and a declined
+  client session. A session already `processing` when it loads shows its screen at once, without
+  waiting for sdk-config.
 - The status is read with `GET /pay/status` every 5 s (15 s while the socket is connected, slower after
   2 minutes), errors back off up to a minute, and the watch decides on every status: a `410` or a token
   that is no longer valid ends it (1.2 polled forever), an attempt that ended without charging is
   reported, and after 15 minutes the result is `processing` — counted on the device's monotonic clock
-  from the attempt, never by comparing the server's timestamps with the phone's clock. The socket
+  from the Pay press, never by comparing the server's timestamps with the phone's clock. The socket
   follows the session's `echo` host, port and TLS.
 - Every request sends `X-Wajub-Client`, `X-Request-Id` and the device's `Accept-Language`, has its own
   timeout (30 s, 60 s for payments), and retries what is safe: reads, and payments with the same
   `Idempotency-Key`. A payment request that gets no answer is never shown as a failure: the sheet waits
   for the status, and if the payment is still pending a minute later it goes back to the form, the next
-  Pay reusing the same key. `/pay/process` sends the device signals the API's risk checks read
+  Pay reusing the same key (a refusal the payment carried before this attempt, even from an earlier
+  sheet, is not taken as its answer; a new one is). With Altcha on, nothing is sent without a solved
+  challenge: a challenge that cannot be fetched or solved leaves the payer on the form with the error. `/pay/process` sends the device signals the API's risk checks read
   (`data._client`, with a fingerprint kept per install).
 - Merchant branding is read with its real types: JSON `null` used to arrive as the text `"null"` on
   Android. Read `SessionData.brand`; `SessionData.branding` is deprecated.
@@ -66,20 +71,30 @@
   after a refused number or "Try again".
 - The sheet is keyed on the session token, so a `WajubSession` created in the composable stays one sheet
   across recompositions, and after a configuration change the callbacks called are those of the screen
-  now shown.
+  now shown. A result that lands while the screen is being recreated reaches the new one.
 - Fixed in the 1.2 watchers (`watchStatus`, `watchStatusPolling`, `RealtimeSubscriber`, `StatusPoller`),
   which keep their flows, `intervalMs`, results and lack of time limit: they read `GET /pay/status`
-  instead of reloading the session; a session that is gone ends the flow with `Failed`
-  (`session_not_found` for `401`/`403`/`404`, the API's error for `410`) where they polled forever; a
-  payment back to `pending` after `processing` ends it with `Failed` (the decline code, or
-  `payment_attempt_ended`) where they reported `Processing` forever; a value is emitted only when the
-  result changes (`pending` then `processing` is one `Processing`, 1.2.1 sent two); errors back off 5 s,
-  10 s… up to a minute.
+  instead of reloading the session; a session that is gone (`401`, `403`, `404`, `410`) ends the flow
+  with `Failed` and the error the 1.2 calls give for that answer (`AuthenticationError`, not retryable,
+  for `401`, `404` and `410`) where they polled forever; a payment back to `pending` after `processing`
+  ends it with `Failed` (the decline code, or `payment_attempt_ended`) where they reported `Processing`
+  forever; a value is emitted only when the result changes (`pending` then `processing` is one
+  `Processing`, 1.2.1 sent two); errors back off 5 s, 10 s… up to a minute. They end on `succeeded`,
+  `refunded` and `partially_refunded` (`Complete`), and no longer on `paid`, `success`, `successful` or
+  `complete`, which the API never sends.
 - `SessionChannel.nameFr` is read from the API's `name.fr` key. 1.2.1 read `name_fr`, which the API
   never sends, so it was always `null`.
+- Values the API leaves out are read as such, as the 1.2 calls return them too: a channel without
+  `min_amount`/`max_amount` has `null` limits (1.2.1: `NaN`), a session without a `locale` has
+  `SessionData.locale` `"en"` (1.2.1: the text `"null"`; `sessionLocale` is `null`), and an `echo`
+  without a `key` has `EchoConfig.key` `""` (1.2.1: `"null"`). `Idempotency-Key` is a bare UUID
+  (1.2.1: `wajub-` and a UUID), as the API documents it.
 - Compatibility: the 1.2.1 constructors of `PayClient` (`new PayClient()` from Java included),
   `MobileMoneyInput`, `WajubError`, `SessionTransaction`, `ProcessingContext`, `SessionChannel` and
-  `SessionData` are kept. `PresentOptions.toString()` no longer prints the session token.
+  `SessionData` are kept, and so is the 1.2.1 `copy` of `SessionTransaction`, `ProcessingContext`,
+  `SessionChannel`, `SessionData`, `MobileMoneyInput` and the `Raw*` wire models, for Java callers and
+  for code compiled against 1.2.1 (it keeps the fields 1.3 added). `SessionTransaction.errorCode` is
+  new. `PresentOptions.toString()` no longer prints the session token.
 - Both artifacts ship R8 rules for the Pusher client (`-dontwarn` for its optional SLF4J binding), so
   a minified app builds without rules of its own. `wajub-mobile-core` no longer depends on Moshi, which
   it did not use.
