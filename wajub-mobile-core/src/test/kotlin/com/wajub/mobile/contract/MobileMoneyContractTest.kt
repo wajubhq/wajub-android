@@ -158,11 +158,42 @@ class MobileMoneyContractTest {
         runCurrent()
         controller.selectMethod("mobile_money")
         controller.setPhone("+٢٣٧ ٦٧٧ ١٢٣ ٤٥٦")
-        assertEquals("+237677123456", assertIs<SheetScreen.Form>(controller.screen.value).mobileMoney!!.phone)
+        assertEquals("237677123456", assertIs<SheetScreen.Form>(controller.screen.value).mobileMoney!!.phone, "digits only, as the field shows them")
         controller.payMobileMoney()
         runCurrent()
         assertEquals(1, api.count("POST /pay/process"))
         assertEquals("+237677123456", api.lastBody("POST /pay/process").getJSONObject("data").getString("phone"))
+    }
+
+    @Test
+    fun `MM-01 reads digits outside the BMP`() {
+        // Adlam digits (U+1E950…, Fulfulde), two UTF-16 units each.
+        val adlam = { ascii: String -> ascii.map { c -> String(Character.toChars(0x1E950 + (c - '0'))) }.joinToString("") }
+        val ci = MobileMoney.data().country("CI")!!
+        assertEquals("0701020304", MobileMoney.sanitize(adlam("0701020304")))
+        assertTrue(MobileMoney.isValid(adlam("0701020304"), ci))
+        assertEquals("orange", MobileMoney.detectOperator(adlam("0701020304"), ci))
+        assertEquals("+2250701020304", MobileMoney.e164(adlam("0701020304"), ci))
+        val gn = MobileMoney.data().country("GN")!!
+        assertTrue(MobileMoney.isValid(adlam("622123456"), gn))
+        assertEquals("+224622123456", MobileMoney.e164(adlam("622123456"), gn))
+    }
+
+    @Test
+    fun `MM-05 keeps digits only in the field, as the web does`() = runTest {
+        // A `+` typed in the field is dropped: `+680000000` is a Cameroonian number, not a foreign one.
+        val api = cmApi()
+            .on("POST /pay/process", Fixtures.response("process-processing-mobile-money-live"))
+            .on("GET /pay/status", Fixtures.response("status-processing"))
+        val (controller, _) = checkout(api)
+        controller.start()
+        runCurrent()
+        controller.selectMethod("mobile_money")
+        controller.setPhone("+680000000")
+        assertEquals("680000000", assertIs<SheetScreen.Form>(controller.screen.value).mobileMoney!!.phone)
+        controller.payMobileMoney()
+        runCurrent()
+        assertEquals("+237680000000", api.lastBody("POST /pay/process").getJSONObject("data").getString("phone"))
     }
 
     @Test

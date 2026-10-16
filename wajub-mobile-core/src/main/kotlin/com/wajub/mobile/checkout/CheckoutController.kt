@@ -497,7 +497,8 @@ class CheckoutController internal constructor(
 
     /** The number as typed: detection preselects its operator until the payer picks one. */
     fun setPhone(text: String) = updateMobileMoney { form ->
-        val phone = asciiDigits(text, keepPlus = true).take(16)
+        // Digits only, as the field shows them (a `+` is dropped, as on the web).
+        val phone = asciiDigits(text).take(15)
         val detected = form.countryInfo?.let { MobileMoney.detectOperator(phone, it, sandbox) }
         form.copy(
             phone = phone,
@@ -733,23 +734,16 @@ class CheckoutController internal constructor(
     private fun family(): String = method?.family ?: "unknown"
 
     // [text] with its decimal digits as 0-9, whatever script they were typed in; the rest as typed.
+    // By code point: some scripts' digits lie outside the BMP (Adlam, U+1E950…).
     private fun asciiDigitsKeepingText(text: String): String = buildString {
-        for (c in text) {
-            val digit = Character.digit(c, 10)
-            if (digit >= 0) append('0' + digit) else append(c)
+        text.codePoints().forEach { cp ->
+            val digit = Character.digit(cp, 10)
+            if (digit >= 0) append('0' + digit) else appendCodePoint(cp)
         }
     }
 
     // The decimal digits of [text] as 0-9, whatever script the keyboard typed them in (٠٧ -> 07).
-    private fun asciiDigits(text: String, keepPlus: Boolean = false): String = buildString {
-        for (c in text) {
-            val digit = Character.digit(c, 10)
-            when {
-                digit >= 0 -> append('0' + digit)
-                keepPlus && c == '+' -> append('+')
-            }
-        }
-    }
+    private fun asciiDigits(text: String): String = MobileMoney.sanitize(text)
 
     // A sandbox session: its test numbers are valid and test their own operator.
     private val sandbox: Boolean get() = (_session.value?.transaction ?: lastTransaction)?.sandbox == true

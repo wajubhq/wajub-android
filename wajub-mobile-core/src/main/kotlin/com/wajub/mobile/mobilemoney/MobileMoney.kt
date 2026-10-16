@@ -203,8 +203,9 @@ object MobileMoney {
 
     /** Digits only, as 0-9 whatever script they were typed in; everything else is dropped (a `+` too). */
     fun sanitize(input: String): String = buildString {
-        for (c in input) {
-            val digit = Character.digit(c, 10)
+        // By code point: some scripts' digits lie outside the BMP (Adlam, U+1E950…).
+        input.codePoints().forEach { cp ->
+            val digit = Character.digit(cp, 10)
             if (digit >= 0) append('0' + digit)
         }
     }
@@ -217,7 +218,7 @@ object MobileMoney {
         val digits = sanitize(input)
         val dial = sanitize(country.dialCode)
         // Written internationally: `+` before the first digit, or the international prefix 00.
-        val plus = input.firstOrNull { it == '+' || Character.digit(it, 10) >= 0 } == '+'
+        val plus = input.codePoints().filter { it == '+'.code || Character.digit(it, 10) >= 0 }.findFirst().orElse(-1) == '+'.code
         val international = when {
             plus -> digits
             !zerosAsDigits && digits.startsWith("00") -> digits.substring(2)
