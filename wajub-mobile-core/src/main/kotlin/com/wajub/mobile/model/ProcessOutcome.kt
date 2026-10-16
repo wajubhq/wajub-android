@@ -76,7 +76,11 @@ sealed class ProcessOutcome {
     data class Failed(
         val error: WajubError,
         val transaction: SessionTransaction? = null,
-    ) : ProcessOutcome()
+    ) : ProcessOutcome() {
+        // An answer that charged nothing (the payer's own code asked for without its instructions):
+        // the attempt has not started.
+        internal var chargedNothing: Boolean = false
+    }
 }
 
 /** The confirmation steps, and the sandbox 3-D Secure code. */

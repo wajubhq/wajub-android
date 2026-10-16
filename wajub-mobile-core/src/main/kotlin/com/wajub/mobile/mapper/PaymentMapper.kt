@@ -703,7 +703,8 @@ internal fun payerOtp(obj: JSONObject?): PayerOtpInstructions? {
         currency = obj.str("currency").orEmpty(),
         steps = steps,
         reason = obj.str("reason"),
-        attemptsRemaining = obj.int("attempts_remaining"),
+        // A negative count is none left.
+        attemptsRemaining = obj.int("attempts_remaining")?.coerceAtLeast(0),
     )
 }
 

@@ -29,7 +29,8 @@
   and the code field. It reports the new state `PAYER_OTP_REQUIRED`: a `when` over `CheckoutState`
   needs a branch for it.
 - For your own UI: `SessionChannel` and `ChannelOperator` carry `feeAmount` and `amountTotal`,
-  `CheckoutController.amountDue()` gives the amount to show, and a `payer_otp`
+  `CheckoutController.amountDue()` gives the amount to show, `MobileMoneyForm.unavailable` names the
+  operators no longer offered for this payment with why, and a `payer_otp`
   `ProcessOutcome.RequiresAction` carries `PayerOtpInstructions`: the code to dial, the exact amount
   and the steps.
 - Confirmation steps have their own screens: a code, the card PIN, a phone number, a date of birth

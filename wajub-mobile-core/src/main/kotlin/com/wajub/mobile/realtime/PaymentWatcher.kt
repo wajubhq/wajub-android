@@ -266,9 +266,8 @@ class PaymentWatcher internal constructor(
             val message = when {
                 // A status says the operator refused the payer's own code; how many tries are left is not known.
                 code == "invalid_otp" -> PayerOtpTexts.refused(language)
-                // A decline code the catalogue does not name reads as the generic decline, and so does
-                // a text whose count the status does not give.
-                else -> ErrorCatalog.message(code, language, null)?.takeIf { "{" !in it } ?: ErrorCatalog.genericDecline(language)
+                // A decline code the catalogue does not name reads as the generic decline.
+                else -> ErrorCatalog.message(code, language, null) ?: ErrorCatalog.genericDecline(language)
             }
             return WajubError(
                 type = WajubErrorType.PaymentError,

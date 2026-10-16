@@ -250,7 +250,8 @@ object ErrorCatalog {
     /**
      * [code]'s message in [language], placeholders filled from [error]
      * (`{seconds}`, `{block_reference}`) and [args] (`{n}`, `{detected}`,
-     * `{selected}`); null for a code outside the catalogue.
+     * `{selected}`); null for a code outside the catalogue. A sentence whose
+     * value is not given is left out ("Incorrect code." without the tries left).
      */
     fun message(code: String, language: WajubLanguage, error: WajubError?, args: Map<String, String> = emptyMap()): String? {
         val entry = entries[code] ?: return null
@@ -265,8 +266,15 @@ object ErrorCatalog {
             putAll(args)
         }
         values.forEach { (key, value) -> text = text.replace("{$key}", value) }
-        return text
+        if (PLACEHOLDER !in text) return text
+        val kept = text.split(SENTENCE).filter { PLACEHOLDER !in it }
+        return kept.joinToString(" ").ifEmpty { text.replace(PLACEHOLDER, "…") }
     }
+
+    private val PLACEHOLDER = Regex("""\{[a-z_]+\}""")
+    private val SENTENCE = Regex("""(?<=[.!?])\s+""")
+
+    private operator fun Regex.contains(text: String): Boolean = containsMatchIn(text)
 
     /** The text of a provider's decline code the catalogue does not name (`failed`, `stolen_card`…). */
     fun genericDecline(language: WajubLanguage): String = if (language == WajubLanguage.Fr) DECLINE_FR else DECLINE_EN

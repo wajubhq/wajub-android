@@ -113,7 +113,13 @@ internal fun PayerOtpScreen(controller: CheckoutController, screen: SheetScreen.
             FieldLabel(strings.payerOtpStepsTitle)
             val steps = instructions.stepsIn(language).ifEmpty {
                 // No steps from the operator: the generic ones, with the exact amount when there is one.
-                strings.payerOtpGenericSteps.map { genericStep(it, amount) }
+                strings.payerOtpGenericSteps.map { step ->
+                    if (amount == null && "{amount}" in step) {
+                        listOf(PayerOtpPart(strings.payerOtpGenericStepNoAmount, PayerOtpPart.Kind.Text))
+                    } else {
+                        genericStep(step, amount)
+                    }
+                }
             }
             steps.forEachIndexed { index, parts -> StepLine(index + 1, parts, dial) }
         }
@@ -136,14 +142,13 @@ internal fun PayerOtpScreen(controller: CheckoutController, screen: SheetScreen.
 private const val MAX_BOXES = 8
 private const val COPIED_FOR_MS = 2_000L
 
-// A generic step: its `{amount}` in bold; without an amount, the sentence ends before it.
-internal fun genericStep(text: String, amount: String?): List<PayerOtpPart> {
-    if (amount == null) return listOf(PayerOtpPart(text.replace(Regex("""\s*:\s*\{amount\}"""), "").replace("{amount}", ""), PayerOtpPart.Kind.Text))
+// A generic step: its `{amount}` in bold.
+private fun genericStep(text: String, amount: String?): List<PayerOtpPart> {
     val at = text.indexOf("{amount}")
     if (at < 0) return listOf(PayerOtpPart(text, PayerOtpPart.Kind.Text))
     return listOf(
         PayerOtpPart(text.substring(0, at), PayerOtpPart.Kind.Text),
-        PayerOtpPart(amount, PayerOtpPart.Kind.Amount),
+        PayerOtpPart(amount.orEmpty(), PayerOtpPart.Kind.Amount),
         PayerOtpPart(text.substring(at + "{amount}".length), PayerOtpPart.Kind.Text),
     )
 }

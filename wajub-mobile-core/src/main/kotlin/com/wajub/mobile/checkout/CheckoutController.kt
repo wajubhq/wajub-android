@@ -1018,8 +1018,8 @@ class CheckoutController internal constructor(
             is ProcessOutcome.Failed -> {
                 // An action the sheet cannot take still came in a 2xx: the attempt started — unless
                 // it asked for the payer's own code, which charged nothing.
-                if (outcome.error.code == UNSUPPORTED_ACTION_CODE && outcome.error.httpStatus == null && !chargedNothing(outcome.error)) started()
-                onRefused(outcome.error, outcome.transaction, form)
+                if (outcome.error.code == UNSUPPORTED_ACTION_CODE && outcome.error.httpStatus == null && !outcome.chargedNothing) started()
+                onRefused(outcome.error, outcome.transaction, form, chargedNothing = outcome.chargedNothing)
             }
         }
     }
@@ -1054,11 +1054,11 @@ class CheckoutController internal constructor(
         return MobileMoney.e164(momo.phone, country, sandbox)
     }
 
-    private suspend fun onRefused(error: WajubError, txn: SessionTransaction?, form: SheetScreen.Form) {
+    private suspend fun onRefused(error: WajubError, txn: SessionTransaction?, form: SheetScreen.Form, chargedNothing: Boolean = false) {
         attemptInFlight = false
         // A refusal is definitive; an action the sheet cannot take came in a 2xx: still under way
         // (not the payer's own code asked without its instructions: nothing was charged).
-        undecided = error.code == UNSUPPORTED_ACTION_CODE && !chargedNothing(error)
+        undecided = error.code == UNSUPPORTED_ACTION_CODE && !chargedNothing
         error.declineCode?.let {
             // The refusal now on the payment: known, the baseline of the next attempt.
             knownErrorCode = it
@@ -1111,9 +1111,6 @@ class CheckoutController internal constructor(
             else -> showFailed(error)
         }
     }
-
-    // `action: payer_otp` without its instructions.
-    private fun chargedNothing(error: WajubError): Boolean = error.apiMessage == "action: $PAYER_OTP_ACTION"
 
     // Recognised by its code; an answer without one (an older API) by its message,
     // only when the session has a challenge.
@@ -1532,7 +1529,7 @@ class CheckoutController internal constructor(
         stopWatching()
         attemptInFlight = false
         // A page that could not open, or a step the sheet cannot take: the payment may still move.
-        if (error.code != UNSUPPORTED_ACTION_CODE && error.code != "redirect_unavailable" || chargedNothing(error)) undecided = false
+        if (error.code != UNSUPPORTED_ACTION_CODE && error.code != "redirect_unavailable") undecided = false
         clientSessionId = null
         show(SheetScreen.Failed(error, retryAt))
         fire { callbacks.onError?.invoke(error) }

@@ -82,6 +82,8 @@ internal class SheetStrings(
     val payerOtpStepsTitle: String,
     /** When the operator gives no steps; `{amount}` is the exact amount. */
     val payerOtpGenericSteps: List<String>,
+    /** Generic step 2 when no amount is given. */
+    val payerOtpGenericStepNoAmount: String,
     val payerOtpCodeLabel: String,
     val payerOtpSubmit: String,
     val payerOtpChangeMethod: String,
@@ -202,6 +204,7 @@ internal class SheetStrings(
                 "Generate a payment code for the exact amount: {amount}.",
                 "Enter the code you received below.",
             ),
+            payerOtpGenericStepNoAmount = "Generate a payment code for the exact amount.",
             payerOtpCodeLabel = "Payment code",
             payerOtpSubmit = "Confirm payment",
             payerOtpChangeMethod = "Use another payment method",
@@ -310,6 +313,7 @@ internal class SheetStrings(
                 "Générez un code de paiement pour le montant exact : {amount}.",
                 "Saisissez ci-dessous le code que vous avez reçu.",
             ),
+            payerOtpGenericStepNoAmount = "Générez un code de paiement pour le montant exact.",
             payerOtpCodeLabel = "Code de paiement",
             payerOtpSubmit = "Valider le paiement",
             payerOtpChangeMethod = "Changer de moyen de paiement",

@@ -17,6 +17,9 @@ import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextContains
 import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -365,6 +368,29 @@ class PaymentSheetUiTest {
         // Confirmed in the operator's menu already: no phone line, no notification to expect.
         compose.onNodeWithText("You will receive a notification to confirm the payment").assertDoesNotExist()
         compose.onNodeWithText("+22670000000", substring = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun `MM-13 disables Pay when no operator is offered any more`() {
+        val api = FakeApi()
+            .on("GET /pay/session", "session-payer-otp-announced")
+            .on("GET /pay/sdk-config", "sdk-config-sandbox")
+            .on("POST /pay/process", "process-402-payer-otp-attempts-exceeded")
+        val controller = controller(api.session())
+        show(controller)
+        controller.start()
+        idle()
+        controller.selectMethod("mobile_money")
+        controller.setPhone("70000000")
+        controller.payMobileMoney()
+        controller.setPayerOtpCode("654323")
+        controller.submitPayerOtp()
+        idle()
+        val text = "Your operator refused too many codes for this payment. Choose another payment method."
+        compose.onNodeWithTag("wajub-banner").assertTextContains(text)
+        compose.onNodeWithTag("wajub-operator-orange").assertIsNotEnabled().assertTextContains(text)
+        compose.onAllNodesWithText(text).assertCountEquals(2)
+        compose.onNodeWithTag("wajub-pay").assertIsNotEnabled()
     }
 
     @Test

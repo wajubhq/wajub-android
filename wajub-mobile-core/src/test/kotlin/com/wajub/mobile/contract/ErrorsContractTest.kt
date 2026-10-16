@@ -187,6 +187,29 @@ class ErrorsContractTest {
     }
 
     @Test
+    fun `ER-03 never shows a placeholder`() {
+        // Every message of the catalogue, in every language, with nothing to fill it.
+        for (code in ErrorCatalog.codes) {
+            for (language in listOf(WajubLanguage.En, WajubLanguage.Fr)) {
+                val text = ErrorCatalog.message(code, language, null)!!
+                assertTrue('{' !in text && text.isNotBlank(), "$code ($language): $text")
+            }
+        }
+        // A sentence whose value is not given is left out; given, it is there.
+        assertEquals("Incorrect code.", ErrorCatalog.message("invalid_otp", WajubLanguage.En, null))
+        assertEquals("Code PIN incorrect.", ErrorCatalog.message("invalid_pin", WajubLanguage.Fr, null))
+        assertEquals("Incorrect code. 2 attempts left.", ErrorCatalog.message("invalid_otp", WajubLanguage.En, null, mapOf("n" to "2")))
+        // A step refused without its tries left.
+        for (code in listOf("invalid_otp", "invalid_pin", "invalid_birthday", "invalid_address")) {
+            val body = JSONObject().put("status", "failed").put("error", JSONObject().put("code", code))
+            for (language in listOf(WajubLanguage.En, WajubLanguage.Fr)) {
+                val message = WajubError.fromStepFailure(body, language).message
+                assertTrue('{' !in message, "$code ($language): $message")
+            }
+        }
+    }
+
+    @Test
     fun `ER-03 names the refusal of a low-level cancel`() = runTest {
         val refusals = mapOf(
             "cancel-409-payment-partly-paid" to listOf(

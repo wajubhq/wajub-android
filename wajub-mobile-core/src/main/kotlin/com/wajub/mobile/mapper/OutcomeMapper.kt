@@ -81,7 +81,7 @@ internal object OutcomeMapper {
             // Nothing was charged: the payer's own code is asked for first.
             "payer_otp" -> raw.payerOtp?.let {
                 ProcessOutcome.RequiresAction(action, payerOtp = it, transaction = transaction)
-            } ?: unsupported()
+            } ?: unsupported().apply { chargedNothing = true }
             "client_session" -> raw.clientSession?.toModel()?.let {
                 ProcessOutcome.RequiresAction(action, url = it.hostedUrl, clientSession = it, transaction = transaction)
             } ?: unsupported()

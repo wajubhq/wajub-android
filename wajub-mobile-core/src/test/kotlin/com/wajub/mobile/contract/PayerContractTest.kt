@@ -402,6 +402,34 @@ class PayerContractTest {
         assertEquals("Your operator did not accept this code. Generate a new one and try again.", form.banner)
         assertEquals(CheckoutState.COLLECTING_DETAILS, controller.state)
         assertTrue(recorder.events.none { it.startsWith("error:") }, "not FAILED, no onError")
+        // The payment's form, as on a first opening: its country and operators.
+        assertEquals("BF", form.mobileMoney!!.country)
+        assertEquals(listOf("orange"), form.mobileMoney!!.choices.map { it.id })
+        assertEquals("orange", form.mobileMoney!!.selected)
+
+        // The same sheet, too many codes refused elsewhere: that form, the operator disabled.
+        val exhausted = FakeApi()
+            .on("GET /pay/session", Fixtures.response("session-payer-otp-announced") { body ->
+                body.getJSONObject("transaction").put("status", "processing").put(
+                    "processing_context",
+                    org.json.JSONObject().put("channel_slug", "bf.orange").put("is_mobile_money", true),
+                )
+            })
+            .on("GET /pay/sdk-config", Fixtures.response("sdk-config-sandbox"))
+            .on("GET /pay/status", Fixtures.response("status-pending-payer-otp-refused") { body ->
+                body.getJSONObject("transaction").put("error_code", "otp_attempts_exceeded")
+            })
+        val exhaustedEvents = Recorder()
+        val (gone, _) = checkout(exhausted, english, exhaustedEvents)
+        gone.start()
+        runCurrent()
+        advanceTimeBy(10_000)
+        val goneForm = assertIs<SheetScreen.Form>(gone.screen.value).mobileMoney!!
+        assertEquals("BF", goneForm.country)
+        assertEquals(listOf("orange"), goneForm.choices.map { it.id })
+        assertEquals(setOf("orange"), goneForm.unavailable.keys)
+        assertNull(goneForm.selected, "none left: no selection")
+        assertEquals(listOf("error:otp_attempts_exceeded"), exhaustedEvents.events.filter { it.startsWith("error:") })
 
         // (b) A request with no answer, then that refusal: the same, never "{n}".
         val unanswered = bfApi(announced = false)
@@ -445,6 +473,55 @@ class PayerContractTest {
         controller.changeMethod()
         controller.selectMethod("mobile_money")
         assertEquals(mapOf("orange" to text), assertIs<SheetScreen.Form>(controller.screen.value).mobileMoney!!.unavailable)
+
+        // With another operator offered, the selection moves to it, and detection never brings it back.
+        val two = FakeApi()
+            .on("GET /pay/session", Fixtures.response("session-payer-otp-announced") { body ->
+                val channels = body.getJSONArray("channels")
+                val moov = org.json.JSONObject(channels.getJSONObject(0).toString())
+                    .put("id", "bf.moov").put("slug", "bf.moov").put("name", "Moov Money").put("name.fr", "Moov Money")
+                moov.remove("payer_otp")
+                channels.put(moov)
+            })
+            .on("GET /pay/sdk-config", Fixtures.response("sdk-config-sandbox"))
+            .on("POST /pay/process", Fixtures.response("process-402-payer-otp-attempts-exceeded"))
+        val (moved, _) = checkout(two, english)
+        moved.start()
+        runCurrent()
+        moved.selectMethod("mobile_money")
+        moved.setPhone("74123456")
+        assertEquals("orange", assertIs<SheetScreen.Form>(moved.screen.value).mobileMoney!!.selected)
+        moved.payMobileMoney()
+        moved.setPayerOtpCode("654323")
+        moved.submitPayerOtp()
+        runCurrent()
+        assertEquals("moov", assertIs<SheetScreen.Form>(moved.screen.value).mobileMoney!!.selected)
+        moved.setPhone("74123457")
+        assertEquals("moov", assertIs<SheetScreen.Form>(moved.screen.value).mobileMoney!!.selected, "an Orange number does not select Orange")
+    }
+
+    @Test
+    fun `MM-03 never selects a disabled operator`() = runTest {
+        // Orange's 10 450 is over a 10 300 limit: neither the first choice nor detection selects it.
+        val limited = FakeApi()
+            .on("GET /pay/session", Fixtures.response("session-payer-fee-per-channel") { body ->
+                val operators = body.getJSONArray("channels").getJSONObject(0).put("max_amount", 10300).getJSONArray("operators")
+                // Orange first: the first choice offered is MTN.
+                val mtn = operators.getJSONObject(0)
+                operators.put(0, operators.getJSONObject(1)).put(1, mtn)
+            })
+            .on("GET /pay/sdk-config", Fixtures.response("sdk-config-cm-stripe"))
+        val (controller, _) = checkout(limited, english)
+        controller.start()
+        runCurrent()
+        controller.selectMethod("mobile_money")
+        val form = assertIs<SheetScreen.Form>(controller.screen.value).mobileMoney!!
+        assertEquals(listOf("orange", "mtn"), form.choices.map { it.id })
+        assertEquals("mtn", form.selected)
+        controller.setPhone("690000000")
+        assertEquals("mtn", assertIs<SheetScreen.Form>(controller.screen.value).mobileMoney!!.selected)
+        controller.pickOperator("orange")
+        assertEquals("mtn", assertIs<SheetScreen.Form>(controller.screen.value).mobileMoney!!.selected)
     }
 
     @Test
@@ -496,6 +573,21 @@ class PayerContractTest {
         val screen = assertIs<SheetScreen.PayerOtp>(controller.screen.value)
         assertEquals("The code must have 6 digits.", screen.error)
         assertEquals(2, screen.attemptsRemaining)
+        // Typing again clears the refusal; the tries left stay.
+        controller.setPayerOtpCode("1")
+        assertNull(assertIs<SheetScreen.PayerOtp>(controller.screen.value).error)
+        assertEquals(2, assertIs<SheetScreen.PayerOtp>(controller.screen.value).attemptsRemaining)
+
+        // A negative count is none left.
+        val negative = bfApi().on("POST /pay/process", Fixtures.response("process-payer-otp-refused") { body ->
+            body.getJSONObject("payer_otp").put("attempts_remaining", -1)
+        })
+        val none = bfCheckout(negative)
+        none.payMobileMoney()
+        none.setPayerOtpCode("654321")
+        none.submitPayerOtp()
+        runCurrent()
+        assertEquals(0, assertIs<SheetScreen.PayerOtp>(none.screen.value).attemptsRemaining)
 
         // A security-check retry of a code keeps the code step: the same code, the same flow.
         val secured = bfApi()

@@ -76,7 +76,8 @@ internal fun FormScreen(controller: CheckoutController, screen: SheetScreen.Form
                 strings.payWith.fill("name" to screen.method.name), controller::payWallet, busy = screen.busy, tag = "wajub-pay",
             )
             screen.mobileMoney != null -> PrimaryButton(
-                payLabel, controller::payMobileMoney, enabled = screen.mobileMoney!!.choices.isNotEmpty(), busy = screen.busy, tag = "wajub-pay",
+                // No operator offered any more (exhausted, out of its limits): nothing to pay with.
+                payLabel, controller::payMobileMoney, enabled = screen.mobileMoney!!.selected != null, busy = screen.busy, tag = "wajub-pay",
             )
             else -> PrimaryButton(payLabel, controller::payCard, busy = screen.busy, tag = "wajub-pay")
         }
