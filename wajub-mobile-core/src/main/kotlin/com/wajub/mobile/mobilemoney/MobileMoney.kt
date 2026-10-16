@@ -209,28 +209,52 @@ object MobileMoney {
         }
     }
 
-    /**
-     * The digits as typed, without the dial code when the number is written
-     * with it: always after a `+`; otherwise only when the digits are not
-     * already a complete national number (Ghana's `233 123 456` is one).
-     */
-    fun typedNationalDigits(input: String, country: MobileMoneyCountry): String {
+    // The digits after the dial code, and whether the number is another country's
+    // (written with `+` or `00` and another dial code).
+    private class Typed(val digits: String, val foreign: Boolean)
+
+    private fun typed(input: String, country: MobileMoneyCountry, zerosAsDigits: Boolean = false): Typed {
         val digits = sanitize(input)
         val dial = sanitize(country.dialCode)
-        if (dial.isEmpty() || !digits.startsWith(dial)) return digits
-        if (input.trimStart().startsWith("+")) return digits.removePrefix(dial)
+        // Written internationally: `+` before the first digit, or the international prefix 00.
+        val plus = input.firstOrNull { it == '+' || Character.digit(it, 10) >= 0 } == '+'
+        val international = when {
+            plus -> digits
+            !zerosAsDigits && digits.startsWith("00") -> digits.substring(2)
+            else -> null
+        }
+        if (international != null) {
+            return if (dial.isNotEmpty() && international.startsWith(dial)) {
+                Typed(international.removePrefix(dial), foreign = false)
+            } else {
+                Typed(international, foreign = true)
+            }
+        }
+        // Written nationally: the dial code goes only when the digits are not already a
+        // complete national number (Ghana's `233 123 456` is one).
+        if (dial.isEmpty() || !digits.startsWith(dial)) return Typed(digits, foreign = false)
         val asTyped = readNational(digits, country)
         val complete = asTyped.length == country.nationalNumberLength && country.numberPrefix?.let { asTyped.startsWith(it) } != false
-        return if (complete) digits else digits.removePrefix(dial)
+        return Typed(if (complete) digits else digits.removePrefix(dial), foreign = false)
     }
+
+    /** The digits as typed, without the dial code when the number is written with it (`+` or `00`). */
+    fun typedNationalDigits(input: String, country: MobileMoneyCountry): String = typed(input, country).digits
+
+    /** Whether the number is written with another country's dial code: it cannot be paid in [country]. */
+    fun isForeign(input: String, country: MobileMoneyCountry): Boolean = typed(input, country).foreign
 
     /**
      * The number as the country reads it today, without its dial code: an
      * earlier plan's number in its new form (Benin `96 12 34 56` → `0196123456`),
      * the leading 0 kept where it is part of the number (and given back to a
-     * mobile number typed without it), dropped elsewhere.
+     * mobile number typed without it), dropped elsewhere. Another country's
+     * number stays as written.
      */
-    fun nationalDigits(input: String, country: MobileMoneyCountry): String = readNational(typedNationalDigits(input, country), country)
+    fun nationalDigits(input: String, country: MobileMoneyCountry): String {
+        val t = typed(input, country)
+        return if (t.foreign) t.digits else readNational(t.digits, country)
+    }
 
     // Typed national digits as the country reads them: an earlier plan's form, then its leading 0.
     private fun readNational(typed: String, country: MobileMoneyCountry): String {
@@ -252,6 +276,7 @@ object MobileMoney {
     /** Whether the number is complete for [country]; in a [sandbox] session, a sandbox test number is. */
     fun isValid(input: String, country: MobileMoneyCountry, sandbox: Boolean = false): Boolean {
         if (sandbox && sandboxTestNumber(input, country) != null) return true
+        if (isForeign(input, country)) return false
         val length = country.nationalNumberLength ?: return data().looseValid(sanitize(input).length)
         val digits = nationalDigits(input, country)
         return digits.length == length && country.numberPrefix?.let { digits.startsWith(it) } != false
@@ -263,6 +288,7 @@ object MobileMoney {
      */
     fun detectOperator(input: String, country: MobileMoneyCountry, sandbox: Boolean = false): String? {
         if (sandbox) sandboxTestNumber(input, country)?.let { return it.operator }
+        if (isForeign(input, country)) return null
         var digits = nationalDigits(input, country)
         if (digits.isEmpty()) return null
         val prefix = country.numberPrefix
@@ -277,16 +303,31 @@ object MobileMoney {
             ?.takeIf { it !in independent }
     }
 
-    /** The number in international format (`+237677123456`, `+2250707000000`); a [sandbox] test number as it was read. */
+    /**
+     * The number in international format (`+237677123456`, `+2250707000000`);
+     * another country's as written; a [sandbox] test number as it was read.
+     */
     fun e164(input: String, country: MobileMoneyCountry, sandbox: Boolean = false): String {
         if (sandbox) sandboxTestNumber(input, country)?.let { return it.e164 }
-        return country.dialCode + nationalDigits(input, country)
+        val t = typed(input, country)
+        if (t.foreign) return "+" + t.digits
+        return country.dialCode + readNational(t.digits, country)
     }
 
     /** A sandbox test number of [country], or null (it means something in a sandbox session only). */
     fun sandboxTestNumber(input: String, country: MobileMoneyCountry): SandboxTestNumber? {
         val dial = sanitize(country.dialCode)
-        for (reading in listOf(dial + nationalDigits(input, country), dial + typedNationalDigits(input, country))) {
+        val readings = buildList {
+            val t = typed(input, country)
+            if (!t.foreign) {
+                add(dial + readNational(t.digits, country))
+                add(dial + t.digits)
+            }
+            // A leading 00 read as typed digits (Gabon's Airtel `0 000000`).
+            val asDigits = typed(input, country, zerosAsDigits = true)
+            if (!asDigits.foreign) add(dial + asDigits.digits)
+        }
+        for (reading in readings) {
             data().sandboxOperator(country.code, reading)?.let { return SandboxTestNumber(it, "+$reading") }
         }
         return null

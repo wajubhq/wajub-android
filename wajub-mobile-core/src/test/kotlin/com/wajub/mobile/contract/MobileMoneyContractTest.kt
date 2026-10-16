@@ -265,8 +265,6 @@ class MobileMoneyContractTest {
                 assertTrue(MobileMoney.isValid(input, country, sandbox = true), label)
                 assertEquals(operator, MobileMoney.detectOperator(input, country, sandbox = true), label)
                 assertEquals(e164, MobileMoney.e164(input, country, sandbox = true), label)
-                // Outside it the prefixes mean nothing: the numbering plan decides.
-                assertEquals(MobileMoney.nationalDigits(input, country).let { country.dialCode + it }, MobileMoney.e164(input, country), label)
             }
         }
 

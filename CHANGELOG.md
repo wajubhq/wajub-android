@@ -17,8 +17,9 @@
   country now changes the operators offered. Numbers are read by each country's current numbering
   plan (a number of an earlier plan in its current form, the leading 0 kept where it belongs to the
   number), the operator is recognised from the number in more countries, digits typed in another
-  script (Arabic-Indic, Persian…) are read as 0-9, and in a sandbox payment the published test
-  numbers are accepted, each on its own operator. After **Pay**, the payer sees "Approve the payment on
+  script (Arabic-Indic, Persian…) are read as 0-9, a number written with 00 reads like one written
+  with + (another country's is refused), and in a sandbox payment the published test numbers are
+  accepted, each on its own operator. After **Pay**, the payer sees "Approve the payment on
   your phone" with the operator's instruction, also when the sheet reopens on an approval under way.
 - Confirmation steps have their own screens: a code, the card PIN, a phone number, a date of birth
   (typed, or picked in a date picker), a billing address, and the sandbox 3-D Secure code, each with a

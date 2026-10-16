@@ -95,5 +95,5 @@ d62381b755b7c5f3b789d0cc0b65c2a95f0f87e7340dd3c1d48c630a7ff7d7b5  src/test/resou
 ea0bc298c0e29f7cfde82b85c8db71bc765c4e8597234ed1a4874c618e906a2c  src/test/resources/fixtures/status-pending-attempt-refused-live.json
 85ad093961048323cd70a67a103c9fb119925fcc6cc7a345aeee5c556f0d42c0  src/test/resources/fixtures/status-processing.json
 5cc4b9af6819230b7660492c418d182e5e3ad304645a5fb7942d2adbd91e767b  src/test/resources/fixtures/status-succeeded.json
-2425be5cd35026188c22a3565f2f86510beedffcce7d15ba47d00207a3f81316  src/test/resources/fixtures/mobile-money.vectors.json
+37c4f317f9f5595be0731da74e2b447b22b345bc8d6d73db7dab45a4006cbb5f  src/test/resources/fixtures/mobile-money.vectors.json
 d632d6a463c9490816d2c8e6232f519afeb27a4628535baf7a4257966062c062  src/main/resources/com/wajub/mobile/mobile-money.json
