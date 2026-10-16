@@ -602,4 +602,18 @@ class StepsContractTest {
         assertEquals("123", data.getString("cvv"))
         assertEquals("Awa Ngono", data.getString("card_holder"))
     }
+
+    @Test
+    fun `CF-01 names the OTP contact only, or none`() = runTest {
+        for ((contact, expected) in listOf(
+            "080******78" to "080******78",
+            "" to null,
+            // An older answer gave the provider's sentence: its masked contact only.
+            "Please enter the OTP sent to 080******78" to "080******78",
+        )) {
+            val api = cmApi().on("POST /pay/process", Fixtures.response("process-requires-otp") { it.put("otp_masked_contact", contact) })
+            val step = assertIs<SheetScreen.Step>(answered(api).screen.value, contact)
+            assertEquals(expected, step.sentTo, "'$contact'")
+        }
+    }
 }

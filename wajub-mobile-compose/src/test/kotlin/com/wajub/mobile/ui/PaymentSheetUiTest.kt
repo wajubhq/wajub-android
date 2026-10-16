@@ -280,6 +280,34 @@ class PaymentSheetUiTest {
     }
 
     @Test
+    fun `the OTP screen names the masked contact, or none`() {
+        for ((contact, shown) in listOf("080******78" to "Code sent to 080******78", "" to null)) {
+            val api = FakeApi()
+                .on("GET /pay/session", "session-sandbox-cm")
+                .on("GET /pay/sdk-config", "sdk-config-sandbox")
+                .on("POST /pay/process", "process-requires-otp") { it.put("otp_masked_contact", contact) }
+                .on("GET /pay/status", "status-processing")
+            val controller = controller(api.session())
+            show(controller)
+            controller.start()
+            idle()
+            controller.selectMethod("mobile_money")
+            controller.setPhone("670000000")
+            controller.payMobileMoney()
+            idle()
+            compose.onNodeWithTag("wajub-step-screen-otp").assertExists()
+            if (shown != null) {
+                compose.onNodeWithTag("wajub-step-hint", useUnmergedTree = true).assertTextContains(shown)
+            } else {
+                // The code prompt alone, never "sent to" with nothing after it.
+                compose.onNodeWithTag("wajub-step-hint", useUnmergedTree = true).assertDoesNotExist()
+            }
+            controller.hostGone()
+            idle()
+        }
+    }
+
+    @Test
     fun `a French session draws the sheet in French`() {
         val api = FakeApi()
             .on("GET /pay/session", "session-cm-aggregate")

@@ -314,7 +314,11 @@ class WajubSession internal constructor(
         return PaymentMapper.mapProcessResponse(raw, "card")
     }
 
-    /** Cancels the payment; returns the merchant's redirect URL. */
+    /**
+     * Cancels the payment; returns the merchant's redirect URL. A payment being
+     * paid, or partly paid, is not cancelled: a [com.wajub.mobile.model.WajubError]
+     * `payment_in_progress` or `payment_partly_paid` says so.
+     */
     suspend fun cancel(): String? = client.cancel(token).redirectUrl
 
     /**

@@ -173,6 +173,11 @@ object ErrorCatalog {
             "We couldn't open the payment page. Check that a web browser is enabled, then try again.",
             "Impossible d'ouvrir la page de paiement. Vérifiez qu'un navigateur est activé, puis réessayez.",
         ),
+        "payment_partly_paid" to Entry(
+            invalid, false,
+            "Part of this payment has already been paid, so it can't be cancelled.",
+            "Une partie de ce paiement a déjà été réglée : il ne peut plus être annulé.",
+        ),
         // Confirmation steps
         "invalid_otp" to Entry(invalid, true, "Incorrect code. {n} attempts left.", "Code incorrect. Encore {n} essais."),
         "otp_expired" to Entry(invalid, true, "The code has expired.", "Le code a expiré."),
@@ -219,6 +224,18 @@ object ErrorCatalog {
             "A Wajub payment sheet is already presented.",
         ),
     )
+
+    // The refusals of /pay/cancel. Its `payment_in_progress` is not the /pay/process one, which the SDK waits on.
+    private val cancelRefusals: Map<String, Entry> = mapOf(
+        "payment_in_progress" to Entry(
+            invalid, false,
+            "This payment is being paid and can't be cancelled now.",
+            "Ce paiement est en cours de règlement et ne peut pas être annulé maintenant.",
+        ),
+        "payment_partly_paid" to entries.getValue("payment_partly_paid"),
+    )
+
+    internal fun cancelRefusal(code: String): Entry? = cancelRefusals[code]
 
     /** Every code of the catalogue. */
     val codes: Set<String> get() = entries.keys

@@ -149,8 +149,17 @@ class PayClient internal constructor(
         return RawProcessResponse.fromJson(legacySuccess(legacySend(token, ApiCall.ClientSessionComplete, payload)))
     }
 
-    suspend fun cancel(token: String): CancelResult =
-        CancelResult(redirectUrl = legacySuccess(legacySend(token, ApiCall.Cancel, JSONObject())).str("redirect_url"))
+    /**
+     * Cancels the payment. A payment being paid, or partly paid, is not cancelled:
+     * a [WajubError] `payment_in_progress` or `payment_partly_paid` says so.
+     */
+    suspend fun cancel(token: String): CancelResult {
+        val response = legacySend(token, ApiCall.Cancel, JSONObject())
+        if (!response.isSuccess) {
+            WajubError.cancelRefusal(response.status, response.body, response.correlationId, language)?.let { throw it }
+        }
+        return CancelResult(redirectUrl = legacySuccess(response).str("redirect_url"))
+    }
 
     internal fun clientSessionPayload(
         channel: String,

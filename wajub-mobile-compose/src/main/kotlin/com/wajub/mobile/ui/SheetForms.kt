@@ -285,8 +285,9 @@ internal fun StepScreen(controller: CheckoutController, step: SheetScreen.Step, 
     Column(verticalArrangement = Arrangement.spacedBy(look.gapRow.dp), modifier = Modifier.testTag("wajub-step-screen-${step.kind.path}")) {
         Text(title, style = MaterialTheme.typography.titleMedium, color = c.text.color())
         val hint = when (step.kind) {
-            StepKind.Otp -> step.hint?.let { strings.otpSentTo.fill("contact" to it) }
-            StepKind.ThreeDs -> step.hint?.let { strings.threeDsSentTo.fill("email" to it) }
+            // The masked contact only; none named: the code prompt alone.
+            StepKind.Otp -> step.sentTo?.let { strings.otpSentTo.fill("contact" to it) }
+            StepKind.ThreeDs -> step.sentTo?.let { strings.threeDsSentTo.fill("email" to it) }
             // The API's own instruction, in English: secondary text.
             else -> step.hint
         }

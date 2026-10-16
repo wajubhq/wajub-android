@@ -52,7 +52,20 @@ sealed class SheetScreen {
         val resendAt: Long,
         /** Clock time the 3-D Secure code expires. */
         val expiresAt: Long? = null,
-    ) : SheetScreen()
+    ) : SheetScreen() {
+        /**
+         * For a code (OTP, sandbox 3-D Secure): the masked number or address it
+         * was sent to, or null when the provider names none.
+         */
+        val sentTo: String?
+            get() {
+                if (kind != StepKind.Otp && kind != StepKind.ThreeDs) return null
+                val text = hint?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+                if (text.none { it.isWhitespace() }) return text
+                // An older answer gave the provider's sentence: keep its masked contact only.
+                return text.split(Regex("\\s+")).lastOrNull { '*' in it || '@' in it }?.trim('.', ',', ':', ';', '(', ')')
+            }
+    }
 
     /** Waiting for the outcome. [url]: a page to reopen ("Continue payment"). */
     data class Pending(

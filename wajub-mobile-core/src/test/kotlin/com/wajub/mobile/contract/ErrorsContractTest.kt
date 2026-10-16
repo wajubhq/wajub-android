@@ -18,6 +18,7 @@ import java.io.File
 import java.security.MessageDigest
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertIs
 import kotlin.test.assertNotEquals
 import kotlin.test.assertNull
@@ -48,6 +49,8 @@ class ErrorsContractTest {
         "birthday-verify-422-format" to Expected("validation_error", invalid, true, param = "birthday"),
         "broadcasting-auth-403" to Expected("merchant_restricted", payment, false),
         "cancel-400-not-cancellable" to Expected("not_processable", invalid, false),
+        "cancel-409-payment-in-progress" to Expected("payment_in_progress", invalid, false),
+        "cancel-409-payment-partly-paid" to Expected("payment_partly_paid", invalid, false),
         "client-session-422-sandbox" to Expected("client_session_unavailable", invalid, false, param = "request"),
         "client-session-422-security-check-failed" to Expected("security_check_failed", invalid, true, param = "request"),
         "client-session-complete-402" to Expected("failed", payment, true, declineCode = "failed"),
@@ -180,6 +183,49 @@ class ErrorsContractTest {
         runCurrent()
         assertEquals(CheckoutState.FAILED, controller.state)
         assertEquals("Fonds insuffisants.", assertIs<SheetScreen.Failed>(controller.screen.value).error.message)
+    }
+
+    @Test
+    fun `ER-03 names the refusal of a low-level cancel`() = runTest {
+        val refusals = mapOf(
+            "cancel-409-payment-partly-paid" to listOf(
+                "payment_partly_paid",
+                "Part of this payment has already been paid, so it can't be cancelled.",
+                "Une partie de ce paiement a déjà été réglée : il ne peut plus être annulé.",
+            ),
+            "cancel-409-payment-in-progress" to listOf(
+                "payment_in_progress",
+                "This payment is being paid and can't be cancelled now.",
+                "Ce paiement est en cours de règlement et ne peut pas être annulé maintenant.",
+            ),
+        )
+        for ((fixture, expected) in refusals) {
+            for (language in listOf(WajubLanguage.En, WajubLanguage.Fr)) {
+                val session = fakeSession(FakeApi().on("POST /pay/cancel", Fixtures.response(fixture)))
+                session.language = language
+                val error = assertFailsWith<WajubError> { session.cancel() }
+                assertEquals(expected[0], error.code, fixture)
+                assertEquals(invalid, error.type, fixture)
+                assertEquals(false, error.retryable, fixture)
+                assertEquals(409, error.httpStatus, fixture)
+                assertEquals(if (language == WajubLanguage.Fr) expected[2] else expected[1], error.message, fixture)
+                assertEquals(Fixtures.body(fixture).getString("message"), error.apiMessage, fixture)
+            }
+        }
+        assertEquals(
+            "Une partie de ce paiement a déjà été réglée : il ne peut plus être annulé.",
+            ErrorCatalog.message("payment_partly_paid", WajubLanguage.Fr, null),
+        )
+
+        // On /pay/process, payment_in_progress is still a payment under way, never the cancel refusal.
+        assertNull(ErrorCatalog.entry("payment_in_progress"))
+        val charging = cmApi().on("POST /pay/process", Fixtures.response("process-409-payment-in-progress"))
+        val outcome = fakeSession(charging).process(ProcessRequest("cm.mobile", mapOf("phone" to "+237677123458")))
+        assertIs<ProcessOutcome.Processing>(outcome)
+
+        // Any other refusal of a low-level cancel is as in 1.2.1.
+        val other = fakeSession(FakeApi().on("POST /pay/cancel", Fixtures.response("cancel-400-not-cancellable")))
+        assertEquals("Transaction cannot be cancelled", assertFailsWith<WajubError> { other.cancel() }.message)
     }
 
     @Test

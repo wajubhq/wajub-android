@@ -275,6 +275,43 @@ class LifecycleContractTest {
     }
 
     @Test
+    fun `CN-04 handles a cancel refused while the payment is being paid`() = runTest {
+        fun status(value: String) = Fixtures.response("status-processing") { it.getJSONObject("transaction").put("status", value) }
+        // 409 payment_in_progress, the payment processing: no cancel, the status decides.
+        for ((fixture, state) in listOf("cancel-409-payment-in-progress" to "processing", "cancel-409-payment-partly-paid" to "partial")) {
+            for (button in listOf(true, false)) {
+                val api = cmApi().set("POST /pay/cancel", Fixtures.response(fixture)).on("GET /pay/status", status(state))
+                val (controller, recorder) = checkout(api)
+                controller.start()
+                runCurrent()
+                if (button) controller.cancelPayment() else controller.dismiss()
+                runCurrent()
+                assertEquals(1, api.count("GET /pay/status"), "$fixture: the status re-read")
+                assertIs<CheckoutResult.Processing>(recorder.result, "$fixture button=$button")
+                assertTrue(recorder.events.none { it.startsWith("cancel:") }, "$fixture: no onCancel")
+            }
+        }
+
+        // Refused, and the payment still pending: "Cancel payment" leaves the payer where they were.
+        val pending = cmApi()
+            .set("POST /pay/cancel", Fixtures.response("cancel-409-payment-in-progress"))
+            .on("GET /pay/status", status("pending"))
+        val (stays, stayEvents) = checkout(pending)
+        stays.start()
+        runCurrent()
+        stays.selectMethod("mobile_money")
+        stays.cancelPayment()
+        runCurrent()
+        assertTrue(stayEvents.results.isEmpty(), "no result: ${stayEvents.events}")
+        assertIs<SheetScreen.Form>(stays.screen.value)
+        assertTrue(stays.cancellable.value)
+        // A dismiss then still settles as a dismiss before any attempt.
+        stays.dismiss()
+        runCurrent()
+        assertEquals(CheckoutResult.Cancelled(CancelReason.Dismissed, null), stayEvents.result)
+    }
+
+    @Test
     fun `ST-01 reports Wajub js states`() = runTest {
         assertEquals(
             listOf(

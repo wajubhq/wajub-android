@@ -11,6 +11,8 @@ dd3298bf0047316d3d3090e39a6736ecec3905e42a0f87eb2f6e4faab85c9a98  src/test/resou
 952bf26a345f34d1196fba770bf789a9f8520f94dab532b9d8d4cd04c1abc6eb  src/test/resources/fixtures/broadcasting-auth-403.json
 d3c2dffe6e447d0ca6c4b2c1c49bb35158a91bc9a3f4d46e9b9959f349b07306  src/test/resources/fixtures/cancel-200.json
 05e12ab715dcf46c9c9a0dd41eb32a23993aa3a2811ad65fc5432cfa15d1dee2  src/test/resources/fixtures/cancel-400-not-cancellable.json
+3e4d1757ee8517136c1297a687647a312711c8309cd0c31a177011b0ea4ae0ce  src/test/resources/fixtures/cancel-409-payment-in-progress.json
+d3d3de5f23deff13438f97de3e49f5b311c4122b565a2b372477223039c48d53  src/test/resources/fixtures/cancel-409-payment-partly-paid.json
 c25aaf4d8fa9f009edbfe2bf233429a523ad1c2d08a42d397988ad0ea5a2c68e  src/test/resources/fixtures/client-session-422-sandbox.json
 6727a27bc225facdba9c10b3183fc8a1bfeba62b4d15441077f3bdb7b9476a90  src/test/resources/fixtures/client-session-422-security-check-failed.json
 c5bea6d05ec491cd6eb7511cfb2aa7888f0a25894bdc019436f70145a370a94b  src/test/resources/fixtures/client-session-complete-200.json

@@ -190,6 +190,22 @@ class WajubError(
             return draft.withMessage(text)
         }
 
+        // errors.md §3.4: the 409 of /pay/cancel for a payment being paid, or partly paid; null for any other answer.
+        internal fun cancelRefusal(httpStatus: Int, body: JSONObject, correlationId: String?, language: WajubLanguage): WajubError? {
+            if (httpStatus != 409) return null
+            val code = body.str("error_code") ?: return null
+            val entry = ErrorCatalog.cancelRefusal(code) ?: return null
+            return WajubError(
+                type = entry.type,
+                message = if (language == WajubLanguage.Fr) entry.fr else entry.en,
+                code = code,
+                retryable = entry.retryable,
+                correlationId = correlationId,
+                httpStatus = httpStatus,
+                apiMessage = body.str("message"),
+            )
+        }
+
         // A confirmation step's HTTP 200 `{status: "failed", attempts_remaining, error}`.
         internal fun fromStepFailure(body: JSONObject, language: WajubLanguage, correlationId: String? = null): WajubError {
             val code = body.obj("error")?.str("code") ?: "request_failed"

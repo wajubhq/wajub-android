@@ -184,6 +184,7 @@ class CheckoutController internal constructor(
     private var lastSeen: PaymentStatus? = null
     private var sawProcessing = false
     private var cancelling: CancelReason? = null
+    private var hostLeftDuringCancel = false
 
     // Runs the cancel: it must settle the sheet even when the host's scope is gone.
     private val detached = CoroutineScope(scope.coroutineContext.minusKey(Job) + SupervisorJob())
@@ -1398,7 +1399,10 @@ class CheckoutController internal constructor(
     fun hostGone() {
         if (finished) return
         // The payer's own cancel is on its way (it outlives the host): it settles the sheet.
-        if (cancelling != null) return
+        if (cancelling != null) {
+            hostLeftDuringCancel = true
+            return
+        }
         val current = _screen.value
         settledResult(current)?.let {
             finish(it)
@@ -1456,9 +1460,16 @@ class CheckoutController internal constructor(
                 "failed" -> CheckoutResult.Failed(WajubError.of("payment_failed", lang), txn)
                 "expired" -> CheckoutResult.Failed(WajubError.of("session_expired", lang), txn)
                 else -> null
-            } ?: CheckoutResult.Cancelled(reason, null)
-            if (result is CheckoutResult.Complete) fire { callbacks.onSuccess?.invoke(result.payment) }
-            finish(result)
+            }
+            if (result == null && reason == CancelReason.PayerCancelled && !hostLeftDuringCancel) {
+                // Still pending, and not cancelled: the payer stays where they were.
+                cancelling = null
+                show(_screen.value)
+                return@launch
+            }
+            val settled = result ?: CheckoutResult.Cancelled(if (hostLeftDuringCancel) CancelReason.HostGone else reason, null)
+            if (settled is CheckoutResult.Complete) fire { callbacks.onSuccess?.invoke(settled.payment) }
+            finish(settled)
         }
     }
 

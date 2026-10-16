@@ -36,7 +36,8 @@
 - Closing the sheet before any payment attempt, or back on the form after a refusal or
   **Try again**, cancels the payment (unless `cancelOnDismiss = false`). Closing it while a payment is
   under way resolves `Processing` and leaves the payment running; closing it on the failure screen
-  resolves `Failed` with that error. **Cancel payment** is offered on the same terms.
+  resolves `Failed` with that error. **Cancel payment** is offered on the same terms; a payment that
+  can no longer be cancelled because it is being paid is not cancelled, and the sheet goes on with it.
 - The sheet never shows a failure when it cannot be sure of the outcome: it shows "Payment in
   progress" and keeps waiting. When the payment turns out not to have been made, the payer is back on
   the form with a connection message and can pay again without being charged twice.
