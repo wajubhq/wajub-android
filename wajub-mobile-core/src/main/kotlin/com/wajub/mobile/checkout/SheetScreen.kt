@@ -125,6 +125,8 @@ data class MobileMoneyForm(
     val listOpened: Boolean = false,
     val phoneError: String? = null,
     val operatorError: String? = null,
+    /** Operators not offered again for this payment (too many codes refused), by id, with why. */
+    val unavailable: Map<String, String> = emptyMap(),
 ) {
     val countryInfo: MobileMoneyCountry? get() = MobileMoney.data().country(country)
 

@@ -2,6 +2,7 @@ package com.wajub.mobile.realtime
 
 import com.wajub.mobile.client.ApiCall
 import com.wajub.mobile.client.PayClient
+import com.wajub.mobile.checkout.PayerOtpTexts
 import com.wajub.mobile.client.TransportException
 import com.wajub.mobile.mapper.OutcomeMapper
 import com.wajub.mobile.model.ErrorCatalog
@@ -262,9 +263,13 @@ class PaymentWatcher internal constructor(
         /** The refusal a `pending` status carries after an attempt: its decline code, or `payment_attempt_ended`. */
         fun attemptEnded(status: PaymentStatus, language: WajubLanguage): WajubError {
             val code = status.errorCode ?: return WajubError.of("payment_attempt_ended", language)
-            val known = ErrorCatalog.entry(code) != null
-            // A decline code the catalogue does not name reads as the generic decline.
-            val message = if (known) ErrorCatalog.message(code, language, null)!! else ErrorCatalog.genericDecline(language)
+            val message = when {
+                // A status says the operator refused the payer's own code; how many tries are left is not known.
+                code == "invalid_otp" -> PayerOtpTexts.refused(language)
+                // A decline code the catalogue does not name reads as the generic decline, and so does
+                // a text whose count the status does not give.
+                else -> ErrorCatalog.message(code, language, null)?.takeIf { "{" !in it } ?: ErrorCatalog.genericDecline(language)
+            }
             return WajubError(
                 type = WajubErrorType.PaymentError,
                 message = message,

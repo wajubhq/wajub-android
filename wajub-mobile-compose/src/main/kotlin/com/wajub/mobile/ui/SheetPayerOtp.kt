@@ -19,6 +19,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -44,6 +45,7 @@ import com.wajub.mobile.checkout.CheckoutController
 import com.wajub.mobile.checkout.SheetScreen
 import com.wajub.mobile.model.PayerOtpPart
 import com.wajub.mobile.model.WajubLanguage
+import kotlinx.coroutines.delay
 
 /**
  * The code the payer generates in the operator's menu: the code to dial (a
@@ -62,6 +64,13 @@ internal fun PayerOtpScreen(controller: CheckoutController, screen: SheetScreen.
         Hint(strings.payerOtpDescription)
         instructions.ussdCode?.let { code ->
             var copied by remember(code) { mutableStateOf(false) }
+            // "Copied" for 2 s, then "Copy" again.
+            LaunchedEffect(copied) {
+                if (copied) {
+                    delay(COPIED_FOR_MS)
+                    copied = false
+                }
+            }
             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                 FieldLabel(strings.payerOtpDial)
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
@@ -86,22 +95,24 @@ internal fun PayerOtpScreen(controller: CheckoutController, screen: SheetScreen.
                 }
             }
         }
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            FieldLabel(strings.payerOtpAmount)
-            // Exactly as the operator's menu takes it: never reformatted.
-            Text(
-                "${instructions.amount} ${instructions.currency}".trim(),
-                style = MaterialTheme.typography.titleMedium,
-                fontWeight = FontWeight(look.fontWeightBold),
-                color = c.text.color(),
-                modifier = Modifier.testTag("wajub-payer-otp-amount"),
-            )
+        // Exactly as the operator's menu takes it: never reformatted. None given: no amount at all.
+        val amount = instructions.amount.trim().takeIf { it.isNotEmpty() }?.let { "$it ${instructions.currency}".trim() }
+        if (amount != null) {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                FieldLabel(strings.payerOtpAmount)
+                Text(
+                    amount,
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight(look.fontWeightBold),
+                    color = c.text.color(),
+                    modifier = Modifier.testTag("wajub-payer-otp-amount"),
+                )
+            }
         }
         Column(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.testTag("wajub-payer-otp-steps")) {
             FieldLabel(strings.payerOtpStepsTitle)
             val steps = instructions.stepsIn(language).ifEmpty {
-                // No steps from the operator: the generic ones, with the exact amount.
-                val amount = "${instructions.amount} ${instructions.currency}".trim()
+                // No steps from the operator: the generic ones, with the exact amount when there is one.
                 strings.payerOtpGenericSteps.map { genericStep(it, amount) }
             }
             steps.forEachIndexed { index, parts -> StepLine(index + 1, parts, dial) }
@@ -123,9 +134,11 @@ internal fun PayerOtpScreen(controller: CheckoutController, screen: SheetScreen.
 }
 
 private const val MAX_BOXES = 8
+private const val COPIED_FOR_MS = 2_000L
 
-// A generic step: its `{amount}` in bold.
-private fun genericStep(text: String, amount: String): List<PayerOtpPart> {
+// A generic step: its `{amount}` in bold; without an amount, the sentence ends before it.
+internal fun genericStep(text: String, amount: String?): List<PayerOtpPart> {
+    if (amount == null) return listOf(PayerOtpPart(text.replace(Regex("""\s*:\s*\{amount\}"""), "").replace("{amount}", ""), PayerOtpPart.Kind.Text))
     val at = text.indexOf("{amount}")
     if (at < 0) return listOf(PayerOtpPart(text, PayerOtpPart.Kind.Text))
     return listOf(
@@ -209,7 +222,7 @@ private fun CodeField(label: String, value: String, boxes: Int?, onChange: (Stri
 }
 
 /** `tel:` with `#` written `%23`, so the dialer opens on the whole code. */
-internal fun dialUri(code: String): Uri = Uri.parse("tel:" + code.replace("#", "%23"))
+internal fun dialUri(code: String): Uri = Uri.parse("tel:" + code.filterNot { it.isWhitespace() }.replace("#", "%23"))
 
 private fun openDialer(context: Context, code: String) {
     val intent = Intent(Intent.ACTION_DIAL, dialUri(code))

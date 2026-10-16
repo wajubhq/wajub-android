@@ -18,6 +18,7 @@ import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -347,6 +348,10 @@ class PaymentSheetUiTest {
         val clipboard = compose.activity.getSystemService(android.content.ClipboardManager::class.java)
         assertEquals("*144*4*6#", clipboard.primaryClip?.getItemAt(0)?.text?.toString())
         compose.onNodeWithTag("wajub-payer-otp-copy").assertTextContains("Copied")
+        // The sheet's effects run on the test's frame clock.
+        compose.mainClock.advanceTimeBy(2_500)
+        compose.waitForIdle()
+        compose.onNodeWithTag("wajub-payer-otp-copy").assertTextEquals("Copy")
 
         // Typing the whole code sends nothing: Confirm payment does.
         compose.onNodeWithTag("wajub-payer-otp-code").performScrollTo().performTextInput("123456")
@@ -357,6 +362,38 @@ class PaymentSheetUiTest {
         idle()
         assertEquals("123456", api.lastBody("POST /pay/process").getJSONObject("data").getString("otp"))
         compose.onNodeWithText("Code received. Your operator is processing the payment, this can take a moment.").assertExists()
+        // Confirmed in the operator's menu already: no phone line, no notification to expect.
+        compose.onNodeWithText("You will receive a notification to confirm the payment").assertDoesNotExist()
+        compose.onNodeWithText("+22670000000", substring = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun `MM-13 shows no amount the operator did not give`() {
+        val api = FakeApi()
+            .on("GET /pay/session", "session-payer-otp-announced") { body ->
+                body.getJSONArray("channels").getJSONObject(0).getJSONObject("payer_otp").apply {
+                    remove("amount")
+                    remove("steps")
+                }
+            }
+            .on("GET /pay/sdk-config", "sdk-config-sandbox")
+        val controller = controller(api.session())
+        show(controller)
+        controller.start()
+        idle()
+        controller.selectMethod("mobile_money")
+        controller.setPhone("70000000")
+        controller.payMobileMoney()
+        idle()
+        compose.onNodeWithTag("wajub-payer-otp").assertExists()
+        compose.onNodeWithTag("wajub-payer-otp-amount").assertDoesNotExist()
+        compose.onNodeWithText("2. Generate a payment code for the exact amount.").assertExists()
+        compose.onNodeWithText("XOF", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("{amount}", substring = true).assertDoesNotExist()
+        // Small rules of the screen's texts.
+        assertEquals("No tries left.", SheetStrings.of(com.wajub.mobile.model.WajubLanguage.En).tries(-1))
+        assertEquals("Il vous reste 2 essais.", SheetStrings.of(com.wajub.mobile.model.WajubLanguage.Fr).tries(2))
+        assertEquals("tel:*144*4*6%23", dialUri(" *144*4*6 # ").toString())
     }
 
     @Test

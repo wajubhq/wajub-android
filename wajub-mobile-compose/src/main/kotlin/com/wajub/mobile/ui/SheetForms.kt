@@ -152,7 +152,9 @@ private fun MobileMoneyFields(
             val payment = controller.transaction?.payableAmount ?: 0.0
             for (choice in form.choices) {
                 val amount = choice.amountTotal ?: payment
-                val disabled = controller.outOfLimits(choice)
+                // Too many codes refused there: not offered again, with why.
+                val unavailable = form.unavailable[choice.id]
+                val disabled = unavailable != null || controller.outOfLimits(choice)
                 ChoiceRow(
                     selected = form.selected == choice.id,
                     enabled = !busy && !disabled,
@@ -160,7 +162,7 @@ private fun MobileMoneyFields(
                     tag = "wajub-operator-${choice.id}",
                     leading = { Logo(choice.logo, choice.badge, size = 32.dp, tag = "wajub-operator-logo-${choice.id}", fallback = choice.logoPng) },
                     title = choice.label,
-                    subtitle = if (disabled) limitText(choice.minAmount, choice.maxAmount, amount, currency, strings, language) else null,
+                    subtitle = unavailable ?: if (disabled) limitText(choice.minAmount, choice.maxAmount, amount, currency, strings, language) else null,
                     trailing = { RadioDot(form.selected == choice.id) },
                 )
             }

@@ -677,23 +677,29 @@ data class RawProcessResponse(
     }
 }
 
-/** A `payer_otp` object: how the payer gets the code their operator asks for; null without its amount. */
+/** A `payer_otp` object: how the payer gets the code their operator asks for. */
 internal fun payerOtp(obj: JSONObject?): PayerOtpInstructions? {
     if (obj == null) return null
-    val amount = obj.str("amount") ?: return null
     val steps = obj.obj("steps")?.let { all ->
         all.keys().asSequence().associate { language ->
-            language.lowercase() to all.objects(language).mapNotNull { step ->
-                val text = step.str("text") ?: return@mapNotNull null
-                PayerOtpStep(text, step.str("template"))
+            val list = all.arr(language)
+            language.lowercase() to (0 until (list?.length() ?: 0)).mapNotNull { i ->
+                when (val step = list!!.opt(i)) {
+                    // A step given as a plain string is its text.
+                    is String -> step.takeIf { it.isNotBlank() }?.let { PayerOtpStep(it) }
+                    is JSONObject -> step.str("text")?.let { PayerOtpStep(it, step.str("template")) }
+                    else -> null
+                }
             }
         }
     }.orEmpty()
     return PayerOtpInstructions(
         channel = obj.str("channel").orEmpty(),
         ussdCode = obj.str("ussd_code"),
-        otpLength = obj.int("otp_length")?.takeIf { it > 0 },
-        amount = amount,
+        // Outside 1 to 12: not a length to ask for.
+        otpLength = obj.int("otp_length")?.takeIf { it in PayerOtpInstructions.LENGTHS },
+        // Missing: shown as nothing.
+        amount = obj.str("amount").orEmpty(),
         currency = obj.str("currency").orEmpty(),
         steps = steps,
         reason = obj.str("reason"),

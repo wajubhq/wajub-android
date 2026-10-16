@@ -333,4 +333,182 @@ class PayerContractTest {
             }
         }
     }
+
+    @Test
+    fun `CH-07 shows the selection's amount again after a code step`() = runTest {
+        val charged = Fixtures.body("process-payer-fee-on-channel-sandbox").getJSONObject("transaction")
+            .put("status", "pending").put("amount_collected", 0).put("remaining_amount", 10450)
+        val api = feeApi()
+            .on("POST /pay/process", Fixtures.response("process-payer-otp-required") { it.put("transaction", charged) })
+        val (controller, _) = checkout(api, english)
+        controller.start()
+        runCurrent()
+        controller.selectMethod("mobile_money")
+        controller.setPhone("690000000")
+        controller.payMobileMoney()
+        runCurrent()
+        assertIs<SheetScreen.PayerOtp>(controller.screen.value)
+        assertEquals(10450.0, controller.amountDue(), "the code is for Orange's price")
+        controller.leavePayerOtp()
+        controller.pickOperator("mtn")
+        assertEquals(10200.0, controller.amountDue(), "the selection's again")
+        controller.changeMethod()
+        assertIs<SheetScreen.Methods>(controller.screen.value)
+        assertEquals(10200.0, controller.amountDue(), "not the price of the attempt that ended")
+    }
+
+    @Test
+    fun `MM-13 keeps a refused code as the baseline`() = runTest {
+        val api = bfApi()
+            .on("POST /pay/process", Fixtures.response("process-payer-otp-refused"), FakeResponse.status(500))
+            .on("GET /pay/status", Fixtures.response("status-pending-payer-otp-refused"))
+        val recorder = Recorder()
+        val controller = bfCheckout(api, recorder)
+        controller.payMobileMoney()
+        controller.setPayerOtpCode("654321")
+        controller.submitPayerOtp()
+        runCurrent()
+        assertEquals(2, assertIs<SheetScreen.PayerOtp>(controller.screen.value).attemptsRemaining)
+        // The next code gets no answer; the status still carries the refusal of the last answer: not news.
+        controller.setPayerOtpCode("111111")
+        controller.submitPayerOtp()
+        runCurrent()
+        advanceTimeBy(30_000)
+        assertEquals(CheckoutState.PENDING, controller.state)
+        advanceTimeBy(40_000)
+        assertIs<SheetScreen.Form>(controller.screen.value)
+        assertTrue("FAILED" !in recorder.states)
+        assertEquals(listOf("error:network_error"), recorder.events.filter { it.startsWith("error:") })
+    }
+
+    @Test
+    fun `MM-13 sends a refusal no code of this sheet led to back to the form`() = runTest {
+        // (a) A sheet reopened on an approval under way: the code was sent from elsewhere.
+        val reopened = FakeApi()
+            .on("GET /pay/session", Fixtures.response("session-payer-otp-announced") { body ->
+                body.getJSONObject("transaction").put("status", "processing").put(
+                    "processing_context",
+                    org.json.JSONObject().put("channel_slug", "bf.orange").put("is_mobile_money", true),
+                )
+            })
+            .on("GET /pay/sdk-config", Fixtures.response("sdk-config-sandbox"))
+            .on("GET /pay/status", Fixtures.response("status-pending-payer-otp-refused"))
+        val recorder = Recorder()
+        val (controller, _) = checkout(reopened, english, recorder)
+        controller.start()
+        runCurrent()
+        advanceTimeBy(10_000)
+        val form = assertIs<SheetScreen.Form>(controller.screen.value)
+        assertEquals("Your operator did not accept this code. Generate a new one and try again.", form.banner)
+        assertEquals(CheckoutState.COLLECTING_DETAILS, controller.state)
+        assertTrue(recorder.events.none { it.startsWith("error:") }, "not FAILED, no onError")
+
+        // (b) A request with no answer, then that refusal: the same, never "{n}".
+        val unanswered = bfApi(announced = false)
+            .on("POST /pay/process", FakeResponse.status(500))
+            .on("GET /pay/status", Fixtures.response("status-pending-payer-otp-refused"))
+        val events = Recorder()
+        val other = bfCheckout(unanswered, events)
+        other.payMobileMoney()
+        runCurrent()
+        advanceTimeBy(10_000)
+        val back = assertIs<SheetScreen.Form>(other.screen.value)
+        assertEquals("Your operator did not accept this code. Generate a new one and try again.", back.banner)
+        assertTrue(events.events.none { it.startsWith("error:") })
+        assertTrue("FAILED" !in events.states)
+
+        // A status refusal shown elsewhere never keeps a placeholder.
+        val status = com.wajub.mobile.model.PaymentStatus("trx", "pending", "invalid_otp", null)
+        assertTrue("{" !in com.wajub.mobile.realtime.PaymentWatcher.attemptEnded(status, WajubLanguage.En).message)
+        assertTrue("{" !in com.wajub.mobile.realtime.PaymentWatcher.attemptEnded(status.copy(errorCode = "invalid_pin"), WajubLanguage.Fr).message)
+    }
+
+    @Test
+    fun `MM-13 offers no exhausted channel again`() = runTest {
+        val api = bfApi().on("POST /pay/process", Fixtures.response("process-402-payer-otp-attempts-exceeded"))
+        val controller = bfCheckout(api)
+        controller.payMobileMoney()
+        controller.setPayerOtpCode("654323")
+        controller.submitPayerOtp()
+        runCurrent()
+        val text = "Your operator refused too many codes for this payment. Choose another payment method."
+        val form = assertIs<SheetScreen.Form>(controller.screen.value).mobileMoney!!
+        assertEquals(mapOf("orange" to text), form.unavailable, "shown disabled with that error's text")
+        assertNull(form.selected)
+        controller.pickOperator("orange")
+        assertNull(assertIs<SheetScreen.Form>(controller.screen.value).mobileMoney!!.selected)
+        controller.payMobileMoney()
+        runCurrent()
+        assertIs<SheetScreen.Form>(controller.screen.value, "Pay never reopens the code screen there")
+        assertEquals(1, api.count("POST /pay/process"))
+        // Still so on the form opened again.
+        controller.changeMethod()
+        controller.selectMethod("mobile_money")
+        assertEquals(mapOf("orange" to text), assertIs<SheetScreen.Form>(controller.screen.value).mobileMoney!!.unavailable)
+    }
+
+    @Test
+    fun `MM-13 takes missing fields and odd steps`() = runTest {
+        // `action: payer_otp` without its instructions: unsupported, and nothing was charged.
+        val api = bfApi(announced = false)
+            .on("POST /pay/process", Fixtures.response("process-payer-otp-required") { it.remove("payer_otp") })
+        val recorder = Recorder()
+        val controller = bfCheckout(api, recorder)
+        controller.payMobileMoney()
+        runCurrent()
+        assertEquals("unsupported_action", assertIs<SheetScreen.Failed>(controller.screen.value).error.code)
+        assertTrue(recorder.events.none { it.startsWith("started:") }, "no onPaymentStarted")
+
+        // No amount: nothing in its place. Plain-string steps; an empty list falls to the next language;
+        // a length outside 1 to 12 is none.
+        val odd = Fixtures.body("process-payer-otp-required").getJSONObject("payer_otp").apply {
+            remove("amount")
+            put("otp_length", 0)
+            put(
+                "steps",
+                org.json.JSONObject()
+                    .put("fr", org.json.JSONArray())
+                    .put("en", org.json.JSONArray().put("Dial the code.").put(org.json.JSONObject().put("text", "Pay.").put("template", "Pay {amount}."))),
+            )
+        }
+        val parsed = RawProcessResponse.fromJson(org.json.JSONObject().put("action", "payer_otp").put("payer_otp", odd)).payerOtp!!
+        assertEquals("", parsed.amount)
+        assertNull(parsed.otpLength)
+        assertEquals(4..8, parsed.codeLengths)
+        assertEquals(listOf("Dial the code.", "Pay."), parsed.stepsIn(WajubLanguage.Fr).map { it.single().text })
+        for (length in listOf(-3, 13)) {
+            assertNull(RawProcessResponse.fromJson(org.json.JSONObject().put("payer_otp", odd.put("otp_length", length))).payerOtp!!.otpLength)
+        }
+        assertEquals(12, RawProcessResponse.fromJson(org.json.JSONObject().put("payer_otp", odd.put("otp_length", 12))).payerOtp!!.otpLength)
+    }
+
+    @Test
+    fun `MM-13 keeps the tries left and the code step`() = runTest {
+        // The tries left stay after a code fails the local check.
+        val api = bfApi().on("POST /pay/process", Fixtures.response("process-payer-otp-refused"))
+        val controller = bfCheckout(api)
+        controller.payMobileMoney()
+        controller.setPayerOtpCode("654321")
+        controller.submitPayerOtp()
+        runCurrent()
+        controller.setPayerOtpCode("12")
+        controller.submitPayerOtp()
+        val screen = assertIs<SheetScreen.PayerOtp>(controller.screen.value)
+        assertEquals("The code must have 6 digits.", screen.error)
+        assertEquals(2, screen.attemptsRemaining)
+
+        // A security-check retry of a code keeps the code step: the same code, the same flow.
+        val secured = bfApi()
+            .on("POST /pay/process", Fixtures.response("process-422-security-check-failed"), Fixtures.response("process-payer-otp-accepted-sandbox"))
+            .on("GET /pay/status", Fixtures.response("status-processing"))
+        val retried = bfCheckout(secured)
+        retried.payMobileMoney()
+        retried.setPayerOtpCode("123456")
+        retried.submitPayerOtp()
+        runCurrent()
+        val sent = secured.requests("POST /pay/process")
+        assertEquals(2, sent.size)
+        assertEquals(listOf("123456", "123456"), sent.map { org.json.JSONObject(it.body!!).getJSONObject("data").getString("otp") })
+        assertTrue(assertIs<SheetScreen.Approval>(retried.screen.value).codeReceived)
+    }
 }

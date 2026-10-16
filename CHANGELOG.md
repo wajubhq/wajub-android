@@ -28,6 +28,10 @@
   of their own: the code to dial (a tap opens the dialer, or copy it), the exact amount, the steps
   and the code field. It reports the new state `PAYER_OTP_REQUIRED`: a `when` over `CheckoutState`
   needs a branch for it.
+- For your own UI: `SessionChannel` and `ChannelOperator` carry `feeAmount` and `amountTotal`,
+  `CheckoutController.amountDue()` gives the amount to show, and a `payer_otp`
+  `ProcessOutcome.RequiresAction` carries `PayerOtpInstructions`: the code to dial, the exact amount
+  and the steps.
 - Confirmation steps have their own screens: a code, the card PIN, a phone number, a date of birth
   (typed, or picked in a date picker), a billing address, and the sandbox 3-D Secure code, each with a
   resend link after a minute. When the provider asks for a second step (a code after the date of

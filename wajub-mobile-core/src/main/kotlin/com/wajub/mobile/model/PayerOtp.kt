@@ -11,7 +11,7 @@ data class PayerOtpInstructions(
     val ussdCode: String?,
     /** The code's number of digits; null: 4 to 8. */
     val otpLength: Int?,
-    /** The exact amount to enter, as the payer types it (`1000`). */
+    /** The exact amount to enter, as the payer types it (`1000`); empty when not given. */
     val amount: String,
     val currency: String,
     /** The steps to get the code, by language (`en`, `fr`). */
@@ -23,7 +23,7 @@ data class PayerOtpInstructions(
 ) {
     /** The lengths the code may have. */
     val codeLengths: IntRange
-        get() = otpLength?.takeIf { it > 0 }?.let { it..it } ?: MIN_LENGTH..MAX_LENGTH
+        get() = otpLength?.takeIf { it in LENGTHS }?.let { it..it } ?: MIN_LENGTH..MAX_LENGTH
 
     /**
      * The steps in [language], else in English, else in French, each in parts;
@@ -57,10 +57,13 @@ data class PayerOtpInstructions(
         return out
     }
 
-    private companion object {
-        const val MIN_LENGTH = 4
-        const val MAX_LENGTH = 8
-        val PLACEHOLDER = Regex("""\{([A-Za-z0-9_]+)\}""")
+    internal companion object {
+        private const val MIN_LENGTH = 4
+        private const val MAX_LENGTH = 8
+
+        /** The lengths a code can be asked with. */
+        val LENGTHS = 1..12
+        private val PLACEHOLDER = Regex("""\{([A-Za-z0-9_]+)\}""")
     }
 }
 

@@ -97,9 +97,9 @@ internal class SheetStrings(
 
     /** The codes the operator may still refuse. */
     fun tries(count: Int): String =
-        when (count) {
-            0 -> noTriesLeft
-            1 -> oneTryLeft
+        when {
+            count <= 0 -> noTriesLeft
+            count == 1 -> oneTryLeft
             else -> triesLeft.fill("count" to count)
         }
 

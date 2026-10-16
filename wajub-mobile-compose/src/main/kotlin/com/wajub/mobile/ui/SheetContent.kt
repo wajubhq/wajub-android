@@ -167,12 +167,15 @@ private fun Screen(controller: CheckoutController, screen: SheetScreen, session:
         }
         is SheetScreen.Methods -> MethodList(controller, screen.methods, session, strings, language)
         is SheetScreen.Form -> FormScreen(controller, screen, session, strings, language)
+        // After the payer's own code: confirmed in the operator's menu already, no notification to expect.
         is SheetScreen.Approval -> Waiting(
             title = if (screen.codeReceived) strings.payerOtpApproval else strings.approvalTitle,
-            body = strings.approvalBody,
+            body = if (screen.codeReceived) null else strings.approvalBody,
             tag = "wajub-approval",
         ) {
-            screen.phone?.let { Text(it, style = MaterialTheme.typography.titleMedium, color = LocalSheetLook.current.colors.text.color()) }
+            screen.phone?.takeIf { !screen.codeReceived }?.let {
+                Text(it, style = MaterialTheme.typography.titleMedium, color = LocalSheetLook.current.colors.text.color())
+            }
             Instruction(screen.instruction, strings, language)
             Text(strings.doNotClose, style = MaterialTheme.typography.bodySmall, color = LocalSheetLook.current.colors.textPlaceholder.color())
         }
@@ -308,7 +311,7 @@ private fun Instruction(text: String?, strings: SheetStrings, language: WajubLan
 }
 
 @Composable
-private fun Waiting(title: String, body: String, tag: String, spinner: Boolean = true, extra: @Composable () -> Unit) {
+private fun Waiting(title: String, body: String?, tag: String, spinner: Boolean = true, extra: @Composable () -> Unit) {
     val c = LocalSheetLook.current.colors
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -317,7 +320,7 @@ private fun Waiting(title: String, body: String, tag: String, spinner: Boolean =
     ) {
         if (spinner) Spinner()
         Text(title, style = MaterialTheme.typography.titleLarge, color = c.text.color(), textAlign = TextAlign.Center)
-        Text(body, style = MaterialTheme.typography.bodyMedium, color = c.textSecondary.color(), textAlign = TextAlign.Center)
+        body?.let { Text(it, style = MaterialTheme.typography.bodyMedium, color = c.textSecondary.color(), textAlign = TextAlign.Center) }
         extra()
     }
 }
