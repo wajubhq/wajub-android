@@ -173,6 +173,11 @@ object ErrorCatalog {
             "We couldn't open the payment page. Check that a web browser is enabled, then try again.",
             "Impossible d'ouvrir la page de paiement. Vérifiez qu'un navigateur est activé, puis réessayez.",
         ),
+        "otp_attempts_exceeded" to Entry(
+            payment, true,
+            "Your operator refused too many codes for this payment. Choose another payment method.",
+            "Votre opérateur a refusé trop de codes pour ce paiement. Choisissez un autre moyen de paiement.",
+        ),
         "payment_partly_paid" to Entry(
             invalid, false,
             "Part of this payment has already been paid, so it can't be cancelled.",

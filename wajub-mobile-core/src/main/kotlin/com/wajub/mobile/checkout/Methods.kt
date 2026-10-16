@@ -59,6 +59,10 @@ data class PaymentMethod(
 ) {
     val slug: String get() = channels.first().slug
 
+    /** What the payer pays with this method when it has its own price (a fee that depends on it); Mobile Money's follows the operator. */
+    val amountTotal: Double?
+        get() = if (family == "mobile_money") null else channels.singleOrNull()?.amountTotal
+
     fun outOfLimits(amount: Double): Boolean =
         (minAmount != null && amount < minAmount) || (maxAmount != null && amount > maxAmount)
 }

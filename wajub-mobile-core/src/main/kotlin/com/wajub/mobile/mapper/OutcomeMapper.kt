@@ -78,6 +78,10 @@ internal object OutcomeMapper {
             "confirm_phone" -> step(action, raw.phoneId, raw.phoneInstruction, transaction) ?: unsupported()
             "confirm_birthday" -> step(action, raw.birthdayId, raw.birthdayInstruction, transaction) ?: unsupported()
             "confirm_address" -> step(action, raw.addressId, raw.addressInstruction, transaction) ?: unsupported()
+            // Nothing was charged: the payer's own code is asked for first.
+            "payer_otp" -> raw.payerOtp?.let {
+                ProcessOutcome.RequiresAction(action, payerOtp = it, transaction = transaction)
+            } ?: unsupported()
             "client_session" -> raw.clientSession?.toModel()?.let {
                 ProcessOutcome.RequiresAction(action, url = it.hostedUrl, clientSession = it, transaction = transaction)
             } ?: unsupported()

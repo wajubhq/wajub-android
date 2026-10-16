@@ -42,9 +42,12 @@ sealed class ProcessOutcome {
         val unansweredSince: Long? = null,
     ) : ProcessOutcome()
 
-    /** The payer has something to do: a page to open, or a confirmation step. */
+    /**
+     * The payer has something to do: a page to open, a confirmation step, or
+     * (`payer_otp`) a code to generate in the operator's menu, nothing being charged yet.
+     */
     data class RequiresAction(
-        /** What to do: `redirect`, `confirm`, `confirm_3ds`, `confirm_otp`…, `client_session`. */
+        /** What to do: `redirect`, `confirm`, `confirm_3ds`, `confirm_otp`…, `client_session`, `payer_otp`. */
         val action: String,
         /** The page to open. */
         val url: String? = null,
@@ -56,6 +59,11 @@ sealed class ProcessOutcome {
         val transaction: SessionTransaction? = null,
         /** Seconds the sandbox 3-D Secure code is valid for. */
         val timeoutSeconds: Int? = null,
+        /**
+         * With `payer_otp`: how the payer gets the code. Then pay again with a
+         * new [ProcessRequest]: the same channel and data, plus the code as `otp`.
+         */
+        val payerOtp: PayerOtpInstructions? = null,
     ) : ProcessOutcome() {
         /**
          * The confirmation step this action asks for, or null for a page to open

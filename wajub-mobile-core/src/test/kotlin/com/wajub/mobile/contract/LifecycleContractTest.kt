@@ -317,7 +317,7 @@ class LifecycleContractTest {
             listOf(
                 "INITIATED", "COLLECTING_DETAILS", "PROCESSING", "OTP_REQUIRED", "PIN_REQUIRED", "PHONE_REQUIRED",
                 "BIRTHDAY_REQUIRED", "ADDRESS_REQUIRED", "3DS_REQUIRED", "USSD_REQUIRED", "APPROVAL_REQUIRED",
-                "VERIFYING", "PENDING", "SUCCESS", "FAILED", "EXPIRED", "CANCELLED",
+                "VERIFYING", "PENDING", "SUCCESS", "FAILED", "EXPIRED", "CANCELLED", "PAYER_OTP_REQUIRED",
             ).sorted(),
             CheckoutState.entries.map { it.value }.sorted(),
         )
@@ -325,6 +325,7 @@ class LifecycleContractTest {
             "process-processing-mobile-money-sandbox" to "APPROVAL_REQUIRED",
             "process-requires-otp" to "OTP_REQUIRED",
             "process-redirect-card-hosted" to "PENDING",
+            "process-payer-otp-required" to "PAYER_OTP_REQUIRED",
         )
         for ((fixture, state) in expected) {
             val api = cmApi()

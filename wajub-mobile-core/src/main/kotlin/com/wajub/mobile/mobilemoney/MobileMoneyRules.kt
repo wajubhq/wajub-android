@@ -1,5 +1,6 @@
 package com.wajub.mobile.mobilemoney
 
+import com.wajub.mobile.model.PayerOtpInstructions
 import com.wajub.mobile.model.SessionChannel
 import com.wajub.mobile.model.WajubLanguage
 
@@ -21,6 +22,10 @@ data class OperatorChoice(
     val maxAmount: Double? = null,
     /** The logo as a PNG, when there is one. */
     val logoPng: String? = null,
+    /** What the payer pays on this operator, when its price is its own (a fee that depends on it). */
+    val amountTotal: Double? = null,
+    /** Set when paying on this operator takes a code the payer generates in its menu first. */
+    val payerOtp: PayerOtpInstructions? = null,
 )
 
 /** A form problem found before submitting. */
@@ -74,6 +79,8 @@ object MobileMoneyRules {
                         minAmount = channel.minAmount,
                         maxAmount = channel.maxAmount,
                         logoPng = op.logoPng?.takeIf { it.startsWith("https://") },
+                        // The operator's own price, else the aggregate's (all its operators agree).
+                        amountTotal = op.amountTotal ?: channel.amountTotal,
                     )
                 }
             } else {
@@ -90,6 +97,9 @@ object MobileMoneyRules {
                     minAmount = channel.minAmount,
                     maxAmount = channel.maxAmount,
                     logoPng = channel.logoPng?.takeIf { it.startsWith("https://") },
+                    amountTotal = channel.amountTotal,
+                    // Never announced on an aggregate: only a channel of its own asks for it.
+                    payerOtp = channel.payerOtp,
                 )
             }
         }

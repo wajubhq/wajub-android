@@ -120,6 +120,7 @@ PresentOptions(
 |---|---|
 | `INITIATED`, `COLLECTING_DETAILS`, `PROCESSING` | Method list, a method's form, the form with Pay busy |
 | `APPROVAL_REQUIRED`, `USSD_REQUIRED` | "Approve the payment on your phone", or a USSD code to dial |
+| `PAYER_OTP_REQUIRED` | "Generate your payment code": for operators that take a code the payer generates in their menu, the code to dial, the exact amount and the code field |
 | `OTP_REQUIRED`, `PIN_REQUIRED`, `PHONE_REQUIRED`, `BIRTHDAY_REQUIRED`, `ADDRESS_REQUIRED`, `THREE_DS_REQUIRED`, `VERIFYING` | A confirmation step, then its check |
 | `PENDING` | "Payment in progress", with **Continue payment** when a provider's page can be reopened |
 | `SUCCESS`, `FAILED`, `EXPIRED`, `CANCELLED` | Outcomes, with **Try again** on a retryable failure |

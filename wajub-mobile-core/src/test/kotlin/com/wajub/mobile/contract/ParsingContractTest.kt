@@ -28,7 +28,7 @@ class ParsingContractTest {
     @Test
     fun `PR-01 parses every fixture`() = runTest {
         val names = Fixtures.names()
-        assertEquals(99, names.size, "the spec ships 99 fixtures")
+        assertEquals(108, names.size, "the spec ships 108 fixtures")
         for (name in names) {
             val file = Fixtures.file(name)
             if (name.startsWith("realtime-")) {

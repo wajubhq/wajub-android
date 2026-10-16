@@ -8,6 +8,8 @@ import com.wajub.mobile.model.ClientSession
 import com.wajub.mobile.model.Customer
 import com.wajub.mobile.model.EchoConfig
 import com.wajub.mobile.model.MobileMoneyInput
+import com.wajub.mobile.model.PayerOtpInstructions
+import com.wajub.mobile.model.PayerOtpStep
 import com.wajub.mobile.model.PaymentResult
 import com.wajub.mobile.model.ProcessingContext
 import com.wajub.mobile.model.SavedMethod
@@ -245,6 +247,9 @@ data class RawChannel(
     val currency: String,
     val operators: List<ChannelOperator> = emptyList(),
     val logoPng: String? = null,
+    val feeAmount: Double? = null,
+    val amountTotal: Double? = null,
+    val payerOtp: PayerOtpInstructions? = null,
 ) {
     /** The earlier constructor, kept for Java and compiled code. */
     constructor(
@@ -261,7 +266,7 @@ data class RawChannel(
     ) : this(id, slug, name, nameFr, type, logo, countries, minAmount, maxAmount, currency, operators = emptyList())
 
     fun toModel(): SessionChannel =
-        SessionChannel(id, slug, name, nameFr, type, logo, countries, minAmount, maxAmount, currency, operators, logoPng)
+        SessionChannel(id, slug, name, nameFr, type, logo, countries, minAmount, maxAmount, currency, operators, logoPng, feeAmount, amountTotal, payerOtp)
 
     /**
      * The earlier `copy`, kept for Java and compiled code. It keeps the
@@ -334,9 +339,14 @@ data class RawChannel(
                         name = op.str("name") ?: operator,
                         logo = op.str("logo"),
                         logoPng = op.str("logo_png"),
+                        feeAmount = op.num("fee_amount"),
+                        amountTotal = op.num("amount_total"),
                     )
                 },
                 logoPng = obj.str("logo_png"),
+                feeAmount = obj.num("fee_amount"),
+                amountTotal = obj.num("amount_total"),
+                payerOtp = payerOtp(obj.obj("payer_otp")),
             )
         }
     }
@@ -578,6 +588,8 @@ data class RawProcessResponse(
     val birthdayInstruction: String? = null,
     val addressId: String? = null,
     val addressInstruction: String? = null,
+    /** With `action: payer_otp`: how to get the code the operator asks for. */
+    val payerOtp: PayerOtpInstructions? = null,
 ) {
     /** The earlier constructor, kept for Java and compiled code. */
     constructor(
@@ -660,8 +672,33 @@ data class RawProcessResponse(
                 birthdayInstruction = body.str("birthday_instruction"),
                 addressId = body.str("address_id"),
                 addressInstruction = body.str("address_instruction"),
+                payerOtp = payerOtp(body.obj("payer_otp")),
             )
     }
+}
+
+/** A `payer_otp` object: how the payer gets the code their operator asks for; null without its amount. */
+internal fun payerOtp(obj: JSONObject?): PayerOtpInstructions? {
+    if (obj == null) return null
+    val amount = obj.str("amount") ?: return null
+    val steps = obj.obj("steps")?.let { all ->
+        all.keys().asSequence().associate { language ->
+            language.lowercase() to all.objects(language).mapNotNull { step ->
+                val text = step.str("text") ?: return@mapNotNull null
+                PayerOtpStep(text, step.str("template"))
+            }
+        }
+    }.orEmpty()
+    return PayerOtpInstructions(
+        channel = obj.str("channel").orEmpty(),
+        ussdCode = obj.str("ussd_code"),
+        otpLength = obj.int("otp_length")?.takeIf { it > 0 },
+        amount = amount,
+        currency = obj.str("currency").orEmpty(),
+        steps = steps,
+        reason = obj.str("reason"),
+        attemptsRemaining = obj.int("attempts_remaining"),
+    )
 }
 
 object PaymentMapper {

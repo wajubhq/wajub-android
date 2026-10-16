@@ -80,7 +80,7 @@ internal fun PaymentSheetContent(controller: CheckoutController) {
                 .padding(horizontal = (look.spacingUnit * 6).dp, vertical = (look.spacingUnit * 4).dp)
                 .testTag("wajub-sheet"),
         ) {
-            Header(session, screen, strings, language, onClose = controller::dismiss)
+            Header(session, screen, controller.amountDue(screen), strings, language, onClose = controller::dismiss)
             // The loader cross-fades to each screen in 200 ms (none without animations).
             val animations = LocalAnimations.current
             val fade: FiniteAnimationSpec<Float> = if (animations) tween(200) else snap()
@@ -98,7 +98,7 @@ internal fun PaymentSheetContent(controller: CheckoutController) {
 }
 
 @Composable
-private fun Header(session: SessionData?, screen: SheetScreen, strings: SheetStrings, language: WajubLanguage, onClose: () -> Unit) {
+private fun Header(session: SessionData?, screen: SheetScreen, amount: Double, strings: SheetStrings, language: WajubLanguage, onClose: () -> Unit) {
     val look = LocalSheetLook.current
     val c = look.colors
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
@@ -122,8 +122,9 @@ private fun Header(session: SessionData?, screen: SheetScreen, strings: SheetStr
             }
             val txn = session?.transaction
             if (txn != null && screen !is SheetScreen.LoadError) {
+                // What the payer pays on the method chosen.
                 Text(
-                    formatAmount(txn.payableAmount, txn.currency, language),
+                    formatAmount(amount, txn.currency, language),
                     style = MaterialTheme.typography.headlineSmall,
                     color = c.text.color(),
                     modifier = Modifier.testTag("wajub-amount"),
@@ -167,7 +168,7 @@ private fun Screen(controller: CheckoutController, screen: SheetScreen, session:
         is SheetScreen.Methods -> MethodList(controller, screen.methods, session, strings, language)
         is SheetScreen.Form -> FormScreen(controller, screen, session, strings, language)
         is SheetScreen.Approval -> Waiting(
-            title = strings.approvalTitle,
+            title = if (screen.codeReceived) strings.payerOtpApproval else strings.approvalTitle,
             body = strings.approvalBody,
             tag = "wajub-approval",
         ) {
@@ -181,6 +182,7 @@ private fun Screen(controller: CheckoutController, screen: SheetScreen, session:
             }
         }
         is SheetScreen.Step -> StepScreen(controller, screen, strings)
+        is SheetScreen.PayerOtp -> PayerOtpScreen(controller, screen, strings, language)
         is SheetScreen.Pending -> Waiting(
             title = strings.pendingTitle,
             body = when {
@@ -251,11 +253,13 @@ internal fun rememberNow(ticking: Boolean): Long {
 @Composable
 private fun MethodList(controller: CheckoutController, methods: List<PaymentMethod>, session: SessionData?, strings: SheetStrings, language: WajubLanguage) {
     val look = LocalSheetLook.current
-    val amount = session?.transaction?.payableAmount ?: 0.0
+    val payment = controller.transaction?.payableAmount ?: session?.transaction?.payableAmount ?: 0.0
     val currency = session?.transaction?.currency.orEmpty()
     Column(verticalArrangement = Arrangement.spacedBy((look.spacingUnit * 2).dp)) {
         Text(strings.selectMethod, style = MaterialTheme.typography.titleSmall, color = look.colors.textSecondary.color())
         for (method in methods) {
+            // The limits take what the payer pays with this method.
+            val amount = method.amountTotal ?: payment
             val disabled = method.outOfLimits(amount)
             ChoiceRow(
                 selected = false,

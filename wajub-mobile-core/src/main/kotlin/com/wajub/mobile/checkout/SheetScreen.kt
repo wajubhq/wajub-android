@@ -3,6 +3,7 @@ package com.wajub.mobile.checkout
 import com.wajub.mobile.mobilemoney.MobileMoney
 import com.wajub.mobile.mobilemoney.MobileMoneyCountry
 import com.wajub.mobile.mobilemoney.OperatorChoice
+import com.wajub.mobile.model.PayerOtpInstructions
 import com.wajub.mobile.model.StepKind
 import com.wajub.mobile.model.WajubError
 import com.wajub.mobile.model.WajubLanguage
@@ -32,8 +33,25 @@ sealed class SheetScreen {
         val canChangeMethod: Boolean = false,
     ) : SheetScreen()
 
-    /** A push was sent to the phone. */
-    data class Approval(val instruction: String?, val phone: String?) : SheetScreen()
+    /** A push was sent to the phone; [codeReceived]: after the payer's own code, the operator is processing it. */
+    data class Approval(val instruction: String?, val phone: String?, val codeReceived: Boolean = false) : SheetScreen()
+
+    /**
+     * The code the payer generates in the operator's menu for the exact amount,
+     * then enters here; [busy] while it is sent.
+     */
+    data class PayerOtp(
+        val instructions: PayerOtpInstructions,
+        /** As typed: digits only. */
+        val code: String = "",
+        /** Why the last code was not taken. */
+        val error: String? = null,
+        /** With a code the operator refused: the codes it may still refuse. */
+        val attemptsRemaining: Int? = null,
+        /** In a test payment: the code that is taken. */
+        val sandboxCode: String? = null,
+        val busy: Boolean = false,
+    ) : SheetScreen()
 
     data class Ussd(val instruction: String?) : SheetScreen()
 

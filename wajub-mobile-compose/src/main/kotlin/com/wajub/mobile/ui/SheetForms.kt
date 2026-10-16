@@ -52,7 +52,8 @@ import com.wajub.mobile.model.WajubLanguage
 internal fun FormScreen(controller: CheckoutController, screen: SheetScreen.Form, session: SessionData?, strings: SheetStrings, language: WajubLanguage) {
     val look = LocalSheetLook.current
     val txn = session?.transaction
-    val payLabel = txn?.let { strings.payAmount.fill("amount" to formatAmount(it.payableAmount, it.currency, language)) } ?: strings.pay
+    // What the payer pays on the operator or method chosen.
+    val payLabel = txn?.let { strings.payAmount.fill("amount" to formatAmount(controller.amountDue(screen), it.currency, language)) } ?: strings.pay
     Column(verticalArrangement = Arrangement.spacedBy(look.gapRow.dp), modifier = Modifier.testTag("wajub-form-${screen.method.id}")) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Text(
@@ -148,8 +149,9 @@ private fun MobileMoneyFields(
     if (form.listVisible) {
         Column(verticalArrangement = Arrangement.spacedBy((look.spacingUnit * 2).dp)) {
             FieldLabel(strings.operator)
-            val amount = controller.sessionData.value?.transaction?.payableAmount ?: 0.0
+            val payment = controller.transaction?.payableAmount ?: 0.0
             for (choice in form.choices) {
+                val amount = choice.amountTotal ?: payment
                 val disabled = controller.outOfLimits(choice)
                 ChoiceRow(
                     selected = form.selected == choice.id,
@@ -190,7 +192,14 @@ private fun MobileMoneyFields(
         enabled = !busy,
     )
     if (!form.listVisible) LinkButton(strings.otherOperator, controller::openOperatorList, tag = "wajub-open-operators")
-    Hint(strings.momoInstructions)
+    // An operator that takes the payer's own code says so before Pay.
+    val announced = form.selectedChoice?.payerOtp
+    val hint = when {
+        announced == null -> strings.momoInstructions
+        announced.ussdCode != null -> strings.payerOtpFormHint.fill("ussd_code" to announced.ussdCode!!)
+        else -> strings.payerOtpFormHintGeneric
+    }
+    Hint(hint, tag = "wajub-momo-hint")
 }
 
 /** Groups the digits by two as the payer types (`67 12 34 56 7`). */

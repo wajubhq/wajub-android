@@ -68,6 +68,7 @@ class ErrorsContractTest {
         "process-402-merchant-not-verified" to Expected("merchant_not_verified", payment, false, declineCode = "merchant_not_verified"),
         "process-403-restricted" to Expected("payment_method_restricted", payment, true),
         "process-403-shield-blocked" to Expected("shield_blocked", payment, false, blockReference = "BLK-PLACEHOLDER"),
+        "process-402-payer-otp-attempts-exceeded" to Expected("otp_attempts_exceeded", payment, true, declineCode = "otp_attempts_exceeded"),
         "process-409-order-not-validated" to Expected("order_not_validated", invalid, false),
         "process-409-payment-in-progress" to Expected("payment_in_progress", invalid, false),
         "process-422-idempotency-key-invalid" to Expected("validation_error", invalid, true, param = "idempotency_key"),

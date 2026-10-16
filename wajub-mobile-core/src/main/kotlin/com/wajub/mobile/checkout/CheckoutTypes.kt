@@ -4,7 +4,7 @@ import com.wajub.mobile.Iso8601
 import com.wajub.mobile.model.SessionTransaction
 import com.wajub.mobile.model.WajubError
 
-/** The sheet's 17 states; [value] is the state's name as a string (`3DS_REQUIRED`). */
+/** The sheet's states; [value] is the state's name as a string (`3DS_REQUIRED`). */
 enum class CheckoutState(val value: String) {
     INITIATED("INITIATED"),
     COLLECTING_DETAILS("COLLECTING_DETAILS"),
@@ -23,6 +23,9 @@ enum class CheckoutState(val value: String) {
     FAILED("FAILED"),
     EXPIRED("EXPIRED"),
     CANCELLED("CANCELLED"),
+
+    /** The payer generates a code in the operator's menu, for the exact amount, and enters it. */
+    PAYER_OTP_REQUIRED("PAYER_OTP_REQUIRED"),
 }
 
 /** How the sheet looks while it loads. */
@@ -152,7 +155,7 @@ data class PaymentSuccess(
     val id: String,
     /** The merchant's reference. */
     val reference: String?,
-    /** What the payer paid, fee included, in major units. */
+    /** What the payer paid, fee included, in major units: what was charged on the method they paid with. */
     val amount: Double,
     val currency: String,
     /** `mobile_money`, `card`, `wallet`, or `unknown` when it was paid before the sheet opened. */

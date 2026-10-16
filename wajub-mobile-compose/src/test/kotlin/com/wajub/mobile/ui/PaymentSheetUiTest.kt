@@ -308,6 +308,58 @@ class PaymentSheetUiTest {
     }
 
     @Test
+    fun `MM-14 offers the operator's code to dial`() {
+        val api = FakeApi()
+            .on("GET /pay/session", "session-payer-otp-announced")
+            .on("GET /pay/sdk-config", "sdk-config-sandbox")
+            .on("POST /pay/process", "process-payer-otp-accepted-sandbox")
+            .on("GET /pay/status", "status-processing")
+        val controller = controller(api.session())
+        show(controller)
+        controller.start()
+        idle()
+        controller.selectMethod("mobile_money")
+        idle()
+        compose.onNodeWithTag("wajub-momo-hint", useUnmergedTree = true)
+            .assertTextContains("For this payment, you will generate a code by dialing *144*4*6#: the next step guides you.")
+        controller.setPhone("70000000")
+        idle()
+        compose.onNodeWithTag("wajub-pay").performScrollTo().performClick()
+        idle()
+        compose.onNodeWithTag("wajub-payer-otp").assertExists()
+        assertEquals(0, api.count("POST /pay/process"), "the code is asked for first")
+        compose.onNodeWithText("Generate your payment code").assertExists()
+        compose.onNodeWithTag("wajub-payer-otp-amount", useUnmergedTree = true).assertTextContains("1000 XOF")
+        compose.onNodeWithText("1. On the phone of the Orange Money account, dial *144*4*6#.").assertExists()
+        compose.onNodeWithTag("wajub-payer-otp-sandbox", useUnmergedTree = true)
+            .assertTextContains("Test mode: enter the code 123456. Any other code is refused.")
+
+        // The code opens the dialer, # written %23.
+        compose.onNodeWithTag("wajub-payer-otp-dial").performScrollTo().performClick()
+        idle()
+        val intent = assertNotNull(shadowOf(compose.activity).nextStartedActivity, "the dialer was opened")
+        assertEquals(Intent.ACTION_DIAL, intent.action)
+        assertEquals("tel:*144*4*6%23", intent.dataString)
+
+        // And copies as it is.
+        compose.onNodeWithTag("wajub-payer-otp-copy").performScrollTo().performClick()
+        idle()
+        val clipboard = compose.activity.getSystemService(android.content.ClipboardManager::class.java)
+        assertEquals("*144*4*6#", clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+        compose.onNodeWithTag("wajub-payer-otp-copy").assertTextContains("Copied")
+
+        // Typing the whole code sends nothing: Confirm payment does.
+        compose.onNodeWithTag("wajub-payer-otp-code").performScrollTo().performTextInput("123456")
+        idle()
+        assertEquals("123456", assertIs<SheetScreen.PayerOtp>(controller.screen.value).code)
+        assertEquals(0, api.count("POST /pay/process"))
+        compose.onNodeWithTag("wajub-payer-otp-submit").performScrollTo().performClick()
+        idle()
+        assertEquals("123456", api.lastBody("POST /pay/process").getJSONObject("data").getString("otp"))
+        compose.onNodeWithText("Code received. Your operator is processing the payment, this can take a moment.").assertExists()
+    }
+
+    @Test
     fun `a French session draws the sheet in French`() {
         val api = FakeApi()
             .on("GET /pay/session", "session-cm-aggregate")

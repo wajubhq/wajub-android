@@ -200,6 +200,12 @@ data class SessionChannel(
     val operators: List<ChannelOperator> = emptyList(),
     /** The logo as a PNG, when there is one. */
     val logoPng: String? = null,
+    /** The payer's fee on this channel, when the payer bears a fee that depends on the channel. */
+    val feeAmount: Double? = null,
+    /** What the payer pays on this channel (the amount plus [feeAmount]), when it has its own price. */
+    val amountTotal: Double? = null,
+    /** Set when paying on this channel takes a code the payer generates in the operator's menu first. */
+    val payerOtp: PayerOtpInstructions? = null,
 ) {
     /** The earlier constructor, kept for Java and compiled code. */
     constructor(
@@ -276,6 +282,10 @@ data class ChannelOperator(
     val logo: String? = null,
     /** The logo as a PNG, when there is one. */
     val logoPng: String? = null,
+    /** The payer's fee on this operator, when the payer bears a fee that depends on it. */
+    val feeAmount: Double? = null,
+    /** What the payer pays on this operator (the amount plus [feeAmount]), when it has its own price. */
+    val amountTotal: Double? = null,
 )
 
 data class EchoConfig(

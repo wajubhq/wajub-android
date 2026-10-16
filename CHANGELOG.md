@@ -6,7 +6,7 @@
   closes exactly once with a `CheckoutResult`: `Complete`, `Processing`, `Failed`, or `Cancelled`
   with its reason. Nine optional callbacks follow the payment (`onReady`, `onStateChange`,
   `onLoadError`, `onPaymentStarted`, `onRedirect`, `onSuccess`, `onError`, `onCancel`, `onComplete`),
-  and `onStateChange` reports 17 named states.
+  and `onStateChange` reports 18 named states.
 - The sheet speaks French and English: `PresentOptions.locale`, else the payment's language, else the
   device's. `ErrorCatalog` gives every error code's message in both.
 - A refused payment shows a failure screen with **Try again**, which goes back to the form with what
@@ -21,6 +21,13 @@
   with + (another country's is refused), and in a sandbox payment the published test numbers are
   accepted, each on its own operator. After **Pay**, the payer sees "Approve the payment on
   your phone" with the operator's instruction, also when the sheet reopens on an approval under way.
+- When the payer's fee depends on how they pay, the amount shown (on **Pay**, in the header, while
+  approving) follows the method and operator chosen, and `PaymentSuccess.amount` is what was
+  charged.
+- Operators that take a code the payer generates in their menu (Orange in Burkina Faso) get a screen
+  of their own: the code to dial (a tap opens the dialer, or copy it), the exact amount, the steps
+  and the code field. It reports the new state `PAYER_OTP_REQUIRED`: a `when` over `CheckoutState`
+  needs a branch for it.
 - Confirmation steps have their own screens: a code, the card PIN, a phone number, a date of birth
   (typed, or picked in a date picker), a billing address, and the sandbox 3-D Secure code, each with a
   resend link after a minute. When the provider asks for a second step (a code after the date of
