@@ -102,12 +102,16 @@ object MobileMoneyRules {
 
     /**
      * The selection after the number changed: a payer's own pick stays; else a
-     * detected operator among [choiceIds] is selected; else [current], else the first.
+     * detected operator among [choiceIds] is selected; else [current], else the
+     * first operator that is not a wallet held whatever the operator (Wave, Express
+     * Union…), else the first.
      */
     fun selection(choiceIds: List<String>, current: String?, pickedByHand: Boolean, detected: String?): String? {
         if (pickedByHand && current != null) return current
         if (detected != null && detected in choiceIds) return detected
-        return current?.takeIf { it in choiceIds } ?: choiceIds.firstOrNull()
+        current?.takeIf { it in choiceIds }?.let { return it }
+        val independent = MobileMoney.data().operatorIndependentWallets
+        return choiceIds.firstOrNull { it !in independent } ?: choiceIds.firstOrNull()
     }
 
     /**

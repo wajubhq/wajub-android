@@ -70,9 +70,11 @@ class MobileMoneyContractTest {
             val country = MobileMoney.data().country(v.getString("country"))!!
             val choices = v.ids("choices")
             val picked = v.nullableString("picked_by_hand")
+            // Before any number: the sheet's initial selection.
+            val initial = MobileMoneyRules.selection(choices, current = null, pickedByHand = false, detected = null)
             val selection = MobileMoneyRules.selection(
                 choiceIds = choices,
-                current = picked ?: choices.first(),
+                current = picked ?: initial,
                 pickedByHand = picked != null,
                 detected = MobileMoney.detectOperator(v.getString("phone"), country),
             )
