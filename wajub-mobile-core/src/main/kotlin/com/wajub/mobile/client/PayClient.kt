@@ -80,9 +80,7 @@ internal class ApiResponse(
 }
 
 /**
- * HTTP client of the payment-session API (`https://api.wajub.com/pay/…`).
- * Every call carries the session token, the SDK's headers, its own timeout,
- * and retries what is safe to retry.
+ * The low-level client the payment calls go through. Prefer [com.wajub.mobile.WajubSession].
  */
 class PayClient internal constructor(
     private val transport: Transport,
@@ -92,11 +90,7 @@ class PayClient internal constructor(
     private val random: Random = Random.Default,
     private val clock: () -> Long = { System.nanoTime() / 1_000_000 },
 ) {
-    /**
-     * Over [http] (proxies, pinning, interceptors). The SDK's calls use a
-     * client derived from it (`newBuilder()`) with their own timeouts —
-     * connect 10 s, 30 s or 60 s per call — and leave [http] untouched.
-     */
+    /** Over your own [http] client (a proxy, certificate pinning, logging…), which is left untouched. */
     @JvmOverloads
     constructor(http: OkHttpClient = defaultHttp()) : this(OkHttpTransport(http))
 
@@ -116,11 +110,7 @@ class PayClient internal constructor(
     internal suspend fun fetchSession(token: String): SessionData =
         RawSessionResponse.fromJson(expectSuccess(send(token, ApiCall.Session), loading = true)).toModel()
 
-    /**
-     * POST /pay/process with a fresh Idempotency-Key, reused by its automatic
-     * retries, and [data] as given. Throws [WajubError] for an answer that is
-     * not a 2xx. `WajubSession.process(ProcessRequest)` adds the device signals.
-     */
+    /** Pays through [channel] with [data] as given. Throws [WajubError] when the payment is refused. */
     suspend fun process(token: String, channel: String, data: Map<String, Any?>): RawProcessResponse {
         val payload = JSONObject().put("channel", channel).put("data", mapToJson(data))
         val response = legacySend(token, ApiCall.Process, payload, idempotencyKey = newIdempotencyKey())
@@ -135,9 +125,8 @@ class PayClient internal constructor(
     }
 
     /**
-     * POST /pay/client-session — opens (or re-serves) a PSP-hosted checkout for
-     * [channel]. Only non-null fields are sent. Idempotent server-side: calling it
-     * again returns the same open session unless [restart] is true.
+     * Starts a card payment on the payment provider's page for [channel]. Calling
+     * it again returns the same page unless [restart] is true.
      */
     suspend fun startClientSession(
         token: String,
@@ -152,17 +141,25 @@ class PayClient internal constructor(
     }
 
     /**
-     * POST /pay/client-session/complete — the backend verifies the session with
-     * the PSP by its own reference (the client never sends a PSP reference).
-     * 200 complete, 202 still pending, 402 failed (thrown as [WajubError]).
+     * Once the payer is back from the provider's page: paid, still pending, or
+     * a decline (thrown as [WajubError]).
      */
     suspend fun completeClientSession(token: String, clientSessionId: String): RawProcessResponse {
         val payload = JSONObject().put("client_session_id", clientSessionId)
         return RawProcessResponse.fromJson(legacySuccess(legacySend(token, ApiCall.ClientSessionComplete, payload)))
     }
 
-    suspend fun cancel(token: String): CancelResult =
-        CancelResult(redirectUrl = legacySuccess(legacySend(token, ApiCall.Cancel, JSONObject())).str("redirect_url"))
+    /**
+     * Cancels the payment. A payment being paid, or partly paid, is not cancelled:
+     * a [WajubError] `payment_in_progress` or `payment_partly_paid` says so.
+     */
+    suspend fun cancel(token: String): CancelResult {
+        val response = legacySend(token, ApiCall.Cancel, JSONObject())
+        if (!response.isSuccess) {
+            WajubError.cancelRefusal(response.status, response.body, response.correlationId, language)?.let { throw it }
+        }
+        return CancelResult(redirectUrl = legacySuccess(response).str("redirect_url"))
+    }
 
     internal fun clientSessionPayload(
         channel: String,
@@ -357,7 +354,7 @@ class PayClient internal constructor(
         private const val MAX_RETRY_AFTER_MS = 10_000L
         private const val JITTER = 0.3
 
-        /** Connect 10 s; each call then applies its own timeout (30 s or 60 s). */
+        /** A default HTTP client. */
         fun defaultHttp(): OkHttpClient = OkHttpClient.Builder().build()
     }
 }

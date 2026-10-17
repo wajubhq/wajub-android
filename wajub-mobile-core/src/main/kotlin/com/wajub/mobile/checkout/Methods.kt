@@ -7,15 +7,15 @@ import com.wajub.mobile.model.SdkConfig
 import com.wajub.mobile.model.SessionChannel
 import com.wajub.mobile.model.WajubLanguage
 
-/** How the card channel is paid (spec §7), first match wins. */
+/** Where the payer enters the card. */
 sealed class CardFlavor {
-    /** The PSP's hosted checkout (Paystack, Flutterwave, Adyen): `POST /pay/client-session`. */
+    /** On the payment provider's own page, after the contact fields it needs. */
     data class ClientSession(val requiredFields: List<String>) : CardFlavor()
 
-    /** Stripe's card widget makes a `pm_…`. */
+    /** In Stripe's card form. */
     data class Stripe(val publishableKey: String) : CardFlavor()
 
-    /** The PSP's card page, after the contact/billing fields it still needs. */
+    /** On the payment provider's card page, after the contact and billing fields it needs. */
     data class HostedRedirect(val requiredFields: List<String>) : CardFlavor()
 
     /** Sandbox only: the published test cards. */
@@ -24,7 +24,7 @@ sealed class CardFlavor {
     data object Hidden : CardFlavor()
 
     companion object {
-        /** `client_session`, then `stripe_elements`, `hosted_redirect`, sandbox `form`; anything else is hidden. */
+        /** Where the card of [entry] is entered; [Hidden] when the sheet cannot take it. */
         fun decide(entry: SdkChannelConfig?, sandbox: Boolean): CardFlavor {
             if (entry == null || !entry.available) return Hidden
             val contactFields = entry.requiredFields.filter { it in PaymentMapper.hostedCardFields }
@@ -51,18 +51,24 @@ data class PaymentMethod(
     /** The channels it pays through (every Mobile Money channel for `mobile_money`). */
     val channels: List<SessionChannel>,
     val cardFlavor: CardFlavor? = null,
-    /** Shown disabled when `amount_total` is outside the channel's limits. */
+    /** Shown disabled when the amount is outside these limits. */
     val minAmount: Double? = null,
     val maxAmount: Double? = null,
+    /** The logo as a PNG, when there is one. */
+    val logoPng: String? = null,
 ) {
     val slug: String get() = channels.first().slug
+
+    /** What the payer pays with this method when it has its own price (a fee that depends on it); Mobile Money's follows the operator. */
+    val amountTotal: Double?
+        get() = if (family == "mobile_money") null else channels.singleOrNull()?.amountTotal
 
     fun outOfLimits(amount: Double): Boolean =
         (minAmount != null && amount < minAmount) || (maxAmount != null && amount > maxAmount)
 }
 
-/** Which session channels the sheet offers (spec §1, §5). */
-object PaymentMethods {
+/** Which payment methods the sheet offers. */
+internal object PaymentMethods {
     /**
      * The methods, in API order: one Mobile Money method for every Mobile
      * Money channel, the card when its flavour is supported, each one-tap
@@ -86,6 +92,7 @@ object PaymentMethods {
                             name = "Mobile Money",
                             logo = momo.first().logo,
                             channels = momo,
+                            logoPng = momo.first().logoPng,
                         )
                     }
                 }
@@ -101,6 +108,7 @@ object PaymentMethods {
                             cardFlavor = flavor,
                             minAmount = channel.minAmount,
                             maxAmount = channel.maxAmount,
+                            logoPng = channel.logoPng,
                         )
                     }
                 }
@@ -113,6 +121,7 @@ object PaymentMethods {
                         channels = listOf(channel),
                         minAmount = channel.minAmount,
                         maxAmount = channel.maxAmount,
+                        logoPng = channel.logoPng,
                     )
             }
         }
@@ -120,18 +129,22 @@ object PaymentMethods {
     }
 
     /**
-     * sdk-config is keyed by raw slug: an aggregate (`cm.mobile`) reads the
-     * entry of [operator]'s channel, else of any member (`cm.mtn`, `cm.orange`).
-     * A Mobile Money channel without an entry (sandbox) is a `form` asking the phone.
+     * sdk-config is keyed by the session's slugs: an aggregate (`cm.mobile`) has
+     * its own entry, and [operator]'s member entry is its prediction; an answer
+     * without the aggregate's entry falls back to its members' (`cm.mtn`,
+     * `cm.orange`). A Mobile Money channel without an entry is a `form` asking
+     * the phone.
      */
     fun entryFor(channel: SessionChannel, sdkConfig: SdkConfig?, operator: String? = null): SdkChannelConfig? {
         val entries = sdkConfig?.channels ?: emptyMap()
+        val own = entries[channel.slug]
         val entry = if (channel.operators.isNotEmpty()) {
             val members = channel.operators
-            members.firstOrNull { it.operator == operator }?.let { entries[it.slug] }
+            operator?.let { picked -> members.firstOrNull { it.operator == picked }?.let { entries[it.slug] } }
+                ?: own
                 ?: members.firstNotNullOfOrNull { entries[it.slug] }
         } else {
-            entries[channel.slug]
+            own
         }
         if (entry == null && MobileMoneyRules.isMobileMoney(channel)) {
             return SdkChannelConfig(available = true, sdk = "form", requiredFields = listOf("phone"))

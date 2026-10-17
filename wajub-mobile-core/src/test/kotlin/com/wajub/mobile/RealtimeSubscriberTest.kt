@@ -146,6 +146,26 @@ class RealtimeSubscriberTest {
     private fun awaitSubscription(): String =
         assertNotNull(subscribedChannels.poll(10, TimeUnit.SECONDS), "the socket never subscribed")
 
+    // Sends [statusOnTheWire] until the watch ends on it; returns every result seen
+    // meanwhile. On a loaded machine the local server's first frame can reach the
+    // client before it has finished subscribing.
+    private suspend fun broadcastUntilAnswered(results: Channel<PaymentResult>, statusOnTheWire: String): List<PaymentResult> {
+        val seen = mutableListOf<PaymentResult>()
+        repeat(10) {
+            broadcast(statusOnTheWire)
+            val ended = kotlinx.coroutines.withTimeoutOrNull(1_000) {
+                while (true) {
+                    val result = results.receive()
+                    seen += result
+                    if (result !is PaymentResult.Processing) break
+                }
+                true
+            }
+            if (ended == true) return seen
+        }
+        return seen
+    }
+
     private fun broadcast(statusOnTheWire: String) {
         val data = JSONObject().put("status", statusOnTheWire).put("uid", PAYMENT_ID).toString()
         socket.get()!!.send(
@@ -193,12 +213,8 @@ class RealtimeSubscriberTest {
         assertEquals("Bearer tok", auth.getHeader("Authorization"))
         assertTrue(auth.body.readUtf8().contains("channel_name=$CHANNEL"))
 
-        broadcast("succeeded")
-        withTimeout(10_000) {
-            var last: PaymentResult? = null
-            for (result in results) last = result
-            assertIs<PaymentResult.Complete>(last)
-        }
+        assertIs<PaymentResult.Complete>(broadcastUntilAnswered(results, "succeeded").lastOrNull())
+        assertTrue(withTimeout(10_000) { results.receiveCatching() }.isClosed)
     }
 
     @Test
@@ -231,9 +247,11 @@ class RealtimeSubscriberTest {
             // The polling has already said `processing`; the socket repeats it.
             assertIs<PaymentResult.Processing>(results.receive())
             broadcast("processing")
-            broadcast("succeeded")
-
-            assertIs<PaymentResult.Complete>(results.receive())
+        }
+        val after = broadcastUntilAnswered(results, "succeeded")
+        assertEquals(1, after.size, "no second processing: $after")
+        assertIs<PaymentResult.Complete>(after.single())
+        withTimeout(10_000) {
             // A final result ends the watch, polling included.
             assertTrue(results.receiveCatching().isClosed)
         }

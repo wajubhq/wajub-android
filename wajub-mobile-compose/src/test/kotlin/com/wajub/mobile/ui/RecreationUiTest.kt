@@ -7,7 +7,6 @@ import com.wajub.mobile.checkout.CheckoutController
 import com.wajub.mobile.checkout.CheckoutResult
 import com.wajub.mobile.checkout.PresentOptions
 import com.wajub.mobile.checkout.SheetScreen
-import com.wajub.mobile.realtime.RealtimeOptions
 import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -116,7 +115,7 @@ class RecreationUiTest {
         val session = api.session("tok_a4")
         val results = mutableListOf<CheckoutResult>()
         val model = CheckoutViewModel(SavedStateHandle())
-        val options = PresentOptions(locale = "en", realtime = RealtimeOptions(enabled = false), cancelOnDismiss = false)
+        val options = PresentOptions(locale = "en", cancelOnDismiss = false)
         // The first screen attaches, as SheetHost does.
         model.attach { results += it }
         val controller = model.controllerFor({ session }, options)

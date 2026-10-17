@@ -54,7 +54,7 @@ class MobileMoneyContractTest {
                 choiceIds = v.ids("choices"),
                 selected = v.nullableString("selected"),
                 label = { it },
-                sandbox = false,
+                sandbox = v.optBoolean("sandbox", false),
             )
             assertEquals(v.nullableString("expected"), issue?.code, v.toString())
             if (issue?.code == "operator_mismatch") {
@@ -70,9 +70,11 @@ class MobileMoneyContractTest {
             val country = MobileMoney.data().country(v.getString("country"))!!
             val choices = v.ids("choices")
             val picked = v.nullableString("picked_by_hand")
+            // Before any number: the sheet's initial selection.
+            val initial = MobileMoneyRules.selection(choices, current = null, pickedByHand = false, detected = null)
             val selection = MobileMoneyRules.selection(
                 choiceIds = choices,
-                current = picked ?: choices.first(),
+                current = picked ?: initial,
                 pickedByHand = picked != null,
                 detected = MobileMoney.detectOperator(v.getString("phone"), country),
             )
@@ -148,6 +150,55 @@ class MobileMoneyContractTest {
     }
 
     @Test
+    fun `MM-05 reads a number typed in another script's digits`() = runTest {
+        // Arabic-Indic digits for 677 123 456: read, checked and sent as the payer's number.
+        val api = cmApi()
+            .on("POST /pay/process", Fixtures.response("process-processing-mobile-money-live"))
+            .on("GET /pay/status", Fixtures.response("status-processing"))
+        val (controller, _) = checkout(api)
+        controller.start()
+        runCurrent()
+        controller.selectMethod("mobile_money")
+        controller.setPhone("+٢٣٧ ٦٧٧ ١٢٣ ٤٥٦")
+        assertEquals("237677123456", assertIs<SheetScreen.Form>(controller.screen.value).mobileMoney!!.phone, "digits only, as the field shows them")
+        controller.payMobileMoney()
+        runCurrent()
+        assertEquals(1, api.count("POST /pay/process"))
+        assertEquals("+237677123456", api.lastBody("POST /pay/process").getJSONObject("data").getString("phone"))
+    }
+
+    @Test
+    fun `MM-01 reads digits outside the BMP`() {
+        // Adlam digits (U+1E950…, Fulfulde), two UTF-16 units each.
+        val adlam = { ascii: String -> ascii.map { c -> String(Character.toChars(0x1E950 + (c - '0'))) }.joinToString("") }
+        val ci = MobileMoney.data().country("CI")!!
+        assertEquals("0701020304", MobileMoney.sanitize(adlam("0701020304")))
+        assertTrue(MobileMoney.isValid(adlam("0701020304"), ci))
+        assertEquals("orange", MobileMoney.detectOperator(adlam("0701020304"), ci))
+        assertEquals("+2250701020304", MobileMoney.e164(adlam("0701020304"), ci))
+        val gn = MobileMoney.data().country("GN")!!
+        assertTrue(MobileMoney.isValid(adlam("622123456"), gn))
+        assertEquals("+224622123456", MobileMoney.e164(adlam("622123456"), gn))
+    }
+
+    @Test
+    fun `MM-05 keeps digits only in the field, as the web does`() = runTest {
+        // A `+` typed in the field is dropped: `+680000000` is a Cameroonian number, not a foreign one.
+        val api = cmApi()
+            .on("POST /pay/process", Fixtures.response("process-processing-mobile-money-live"))
+            .on("GET /pay/status", Fixtures.response("status-processing"))
+        val (controller, _) = checkout(api)
+        controller.start()
+        runCurrent()
+        controller.selectMethod("mobile_money")
+        controller.setPhone("+680000000")
+        assertEquals("680000000", assertIs<SheetScreen.Form>(controller.screen.value).mobileMoney!!.phone)
+        controller.payMobileMoney()
+        runCurrent()
+        assertEquals("+237680000000", api.lastBody("POST /pay/process").getJSONObject("data").getString("phone"))
+    }
+
+    @Test
     fun `MM-06 shows the approval screen`() = runTest {
         for (fixture in listOf("process-processing-mobile-money-live", "process-processing-mobile-money-sandbox")) {
             val api = cmApi()
@@ -170,13 +221,14 @@ class MobileMoneyContractTest {
     }
 
     @Test
-    fun `MM-08 does not block mismatches in sandbox`() = runTest {
+    fun `MM-08 reads mismatches in sandbox from the test number`() = runTest {
+        // An MTN test number picked on Orange: the sandbox would refuse it, so the form does, as in live.
         val api = FakeApi()
             .on("GET /pay/session", Fixtures.response("session-sandbox-cm"))
             .on("GET /pay/sdk-config", Fixtures.response("sdk-config-sandbox"))
             .on("POST /pay/process", Fixtures.response("process-processing-mobile-money-sandbox"))
             .on("GET /pay/status", Fixtures.response("status-processing"))
-        val (controller, _) = checkout(api)
+        val (controller, recorder) = checkout(api)
         controller.start()
         runCurrent()
         controller.selectMethod("mobile_money")
@@ -184,24 +236,32 @@ class MobileMoneyContractTest {
         controller.pickOperator("orange")
         controller.payMobileMoney()
         runCurrent()
-        assertEquals(1, api.count("POST /pay/process"), "the sandbox number is sent although it reads as MTN")
+        assertEquals(0, api.count("POST /pay/process"))
+        assertEquals(
+            "This number belongs to MTN MoMo. Pick MTN MoMo in the list, or enter a Orange Money number.",
+            assertIs<SheetScreen.Form>(controller.screen.value).mobileMoney!!.phoneError,
+        )
+        assertTrue(recorder.events.none { it.startsWith("error:") }, "form errors are not onError")
+        // On its own operator it goes.
+        controller.pickOperator("mtn")
+        controller.payMobileMoney()
+        runCurrent()
+        assertEquals(1, api.count("POST /pay/process"))
 
         // In live, the same mismatch stops the payment with the web's message.
         val live = cmApi()
-        val (liveController, recorder) = checkout(live, com.wajub.mobile.checkout.PresentOptions(sessionToken = "t", locale = "en"))
+        val (liveController, _) = checkout(live, com.wajub.mobile.checkout.PresentOptions(sessionToken = "t", locale = "en"))
         liveController.start()
         runCurrent()
         liveController.selectMethod("mobile_money")
         liveController.setPhone("677123456")
         liveController.pickOperator("orange")
         liveController.payMobileMoney()
-        val form = assertIs<SheetScreen.Form>(liveController.screen.value).mobileMoney!!
         assertEquals(
             "This number belongs to MTN MoMo. Pick MTN MoMo in the list, or enter a Orange Money number.",
-            form.phoneError,
+            assertIs<SheetScreen.Form>(liveController.screen.value).mobileMoney!!.phoneError,
         )
         assertEquals(0, live.count("POST /pay/process"))
-        assertTrue(recorder.events.none { it.startsWith("error:") }, "form errors are not onError")
     }
 
     @Test
@@ -213,7 +273,51 @@ class MobileMoneyContractTest {
         assertEquals(json.getJSONObject("countries").length(), data.countries.size)
         assertEquals("+237", data.country("cm")!!.dialCode)
         assertTrue(data.operatorIndependentWallets.containsAll(listOf("wave", "eu", "djamo")))
-        val future = JSONObject(shipped).put("schema_version", 2).toString()
-        assertFailsWith<IllegalArgumentException> { MobileMoneyData.parse(future) }
+        assertEquals(2, MobileMoneyData.SUPPORTED_SCHEMA_VERSION)
+        for (other in listOf(1, 3)) {
+            val unknown = JSONObject(shipped).put("schema_version", other).toString()
+            assertFailsWith<IllegalArgumentException>("schema $other") { MobileMoneyData.parse(unknown) }
+        }
+        // The shipped copy carries the tables, not the spec's notes.
+        for (note in listOf("source", "errata", "algorithms")) assertFalse(json.has(note), note)
+    }
+
+    @Test
+    fun `MM-10 takes the sandbox test numbers`() = runTest {
+        for (v in cases("sandbox_numbers")) {
+            val input = v.getString("input")
+            val country = MobileMoney.data().country(v.getString("country"))!!
+            val label = "${v.getString("country")} '$input'"
+            val operator = v.nullableString("operator")
+            val e164 = v.nullableString("e164")
+            val test = MobileMoney.sandboxTestNumber(input, country)
+            assertEquals(operator, test?.operator, label)
+            assertEquals(e164, test?.e164, label)
+            if (test != null) {
+                // In a sandbox session: valid whatever the plan says, the prefix's operator, sent as read.
+                assertTrue(MobileMoney.isValid(input, country, sandbox = true), label)
+                assertEquals(operator, MobileMoney.detectOperator(input, country, sandbox = true), label)
+                assertEquals(e164, MobileMoney.e164(input, country, sandbox = true), label)
+            }
+        }
+
+        // The sheet in a sandbox session: a Gabonese Airtel test number, sent as read.
+        val api = FakeApi()
+            .on("GET /pay/session", Fixtures.response("session-sandbox-cm") { body ->
+                val channel = JSONObject().put("id", "ga.airtel").put("slug", "ga.airtel").put("name", "Airtel Money")
+                    .put("type", "mobile_money").put("countries", org.json.JSONArray().put("GA")).put("currency", "XAF")
+                body.put("channels", org.json.JSONArray().put(channel))
+            })
+            .on("GET /pay/sdk-config", Fixtures.response("sdk-config-sandbox"))
+            .on("POST /pay/process", Fixtures.response("process-processing-mobile-money-sandbox"))
+            .on("GET /pay/status", Fixtures.response("status-processing"))
+        val (controller, _) = checkout(api)
+        controller.start()
+        runCurrent()
+        controller.setPhone("0000000")
+        controller.payMobileMoney()
+        runCurrent()
+        assertEquals(1, api.count("POST /pay/process"), "a test number is valid in sandbox")
+        assertEquals("+2410000000", api.lastBody("POST /pay/process").getJSONObject("data").getString("phone"))
     }
 }

@@ -18,14 +18,14 @@ const val API_URL: String = "https://api.wajub.com"
  */
 object WajubMobile {
     /**
-     * What the SDK says about the device (headers, `_client` signals, install
-     * fingerprint). `wajub-mobile-compose` sets it from the app's context at
-     * start-up; an app using only `wajub-mobile-core` can set it itself.
+     * The device the SDK runs on. `wajub-mobile-compose` sets it from the app's
+     * context at start-up; an app using only `wajub-mobile-core` on Android sets
+     * it once, at start-up.
      */
     @Volatile
     var device: DeviceEnvironment = DeviceEnvironment()
 
-    /** Creates a session-bound client from the backend `authorization_token`. */
+    /** The client of one payment, from the `authorization_token` your server got. */
     fun createSession(authorizationToken: String): WajubSession =
         WajubSession(authorizationToken.trim())
 

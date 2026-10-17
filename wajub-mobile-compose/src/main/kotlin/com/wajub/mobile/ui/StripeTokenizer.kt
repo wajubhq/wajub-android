@@ -9,7 +9,7 @@ import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
 /**
- * Stripe `stripe_elements` adapter — native tokenization (no WebView).
+ * Turns the card in Stripe's card form into a payment method, natively (no WebView).
  *
  * Raw card details (PAN/expiry/CVC) never pass through this SDK's own code or app-owned state:
  * callers must obtain [PaymentMethodCreateParams.Card] directly from Stripe's own secure card

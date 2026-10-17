@@ -66,7 +66,7 @@ mavenPublishing {
 
     pom {
         name.set("wajub-mobile-core")
-        description.set("HTTP client, mappers, and Pusher/polling core for the Wajub Android checkout SDK.")
+        description.set("Core of the Wajub Android payment SDK.")
         url.set("https://docs.wajub.com/libraries/sdks/mobile")
         licenses {
             license {

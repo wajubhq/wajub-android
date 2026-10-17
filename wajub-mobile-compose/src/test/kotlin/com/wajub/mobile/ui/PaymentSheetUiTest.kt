@@ -17,7 +17,11 @@ import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsEnabled
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.assertCountEquals
+import androidx.compose.ui.test.assertIsNotEnabled
 import androidx.compose.ui.test.assertTextContains
+import androidx.compose.ui.test.assertTextEquals
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -39,7 +43,6 @@ import com.wajub.mobile.checkout.SheetScreen
 import com.wajub.mobile.checkout.ThemeTokens
 import com.wajub.mobile.model.ActionKind
 import com.wajub.mobile.model.PaymentResult
-import com.wajub.mobile.realtime.RealtimeOptions
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import org.junit.After
@@ -67,6 +70,13 @@ class PaymentSheetUiTest {
     private val controllers = mutableListOf<CheckoutController>()
     private val events = mutableListOf<String>()
 
+    // The Mobile Money tables are read off the main thread at the first load: read them now, so a
+    // loaded machine cannot leave a sheet still loading when a test looks at it.
+    @org.junit.Before
+    fun readTables() {
+        com.wajub.mobile.mobilemoney.MobileMoney.data()
+    }
+
     @After
     fun tearDown() {
         // One sheet at a time: settle every sheet a test opened.
@@ -80,8 +90,8 @@ class PaymentSheetUiTest {
     }
 
     private fun controller(session: WajubSession, options: PresentOptions = PresentOptions(locale = "en")): CheckoutController {
-        // Polling only: no socket leaves the test machine.
-        val polling = options.copy(realtime = RealtimeOptions(enabled = false))
+        // The fake API's sessions have no `echo`: polling only, no socket leaves the test machine.
+        val polling = options
         val callbacks = CheckoutCallbacks(
             onRedirect = { events += "redirect:${it.url}" },
             onLoadError = { events += "loadError:${it.code}" },
@@ -145,6 +155,31 @@ class PaymentSheetUiTest {
         }
         compose.onNodeWithText("Moov", useUnmergedTree = true).assertExists()
         compose.onNodeWithText("MoMo", useUnmergedTree = true).assertExists()
+    }
+
+    @Test
+    fun `CH-06 prefers logo_png where SVG cannot be drawn`() {
+        // Android draws SVG: the logo first, its PNG when it does not load, else the brand badge.
+        val requested = java.util.concurrent.CopyOnWriteArrayList<String>()
+        val api = FakeApi().on("GET /pay/session", "session-cm-aggregate").on("GET /pay/sdk-config", "sdk-config-cm-stripe")
+        val controller = controller(api.session())
+        compose.setContent {
+            CompositionLocalProvider(LocalWajubImageLoader provides svgFailing(LocalContext.current, requested)) {
+                PaymentSheetContent(controller)
+            }
+        }
+        controller.start()
+        idle()
+        // Mobile Money: its SVG fails, its PNG draws. The card has no PNG: its badge.
+        compose.onNodeWithTag("wajub-method-logo-mobile_money-badge", useUnmergedTree = true).assertDoesNotExist()
+        compose.onNodeWithTag("wajub-method-logo-card-badge", useUnmergedTree = true).assertExists()
+        assertTrue("https://assets.wajub.com/img/channels/momo.svg" in requested, "$requested")
+        assertTrue("https://api.wajub.com/img/channels/momo.png" in requested, "$requested")
+        compose.onNodeWithTag("wajub-method-mobile_money").performClick()
+        idle()
+        for (operator in listOf("mtn", "orange")) {
+            compose.onNodeWithTag("wajub-operator-logo-$operator-badge", useUnmergedTree = true).assertDoesNotExist()
+        }
     }
 
     @Test
@@ -246,6 +281,145 @@ class PaymentSheetUiTest {
         assertTrue(intent.hasExtra("android.support.customtabs.extra.SESSION"), "a Custom Tab, never a WebView")
         compose.onNodeWithTag("wajub-pending").assertIsDisplayed()
         compose.onNodeWithTag("wajub-continue").assertIsDisplayed()
+    }
+
+    @Test
+    fun `the OTP screen names the masked contact, or none`() {
+        for ((contact, shown) in listOf("080******78" to "Code sent to 080******78", "" to null)) {
+            val api = FakeApi()
+                .on("GET /pay/session", "session-sandbox-cm")
+                .on("GET /pay/sdk-config", "sdk-config-sandbox")
+                .on("POST /pay/process", "process-requires-otp") { it.put("otp_masked_contact", contact) }
+                .on("GET /pay/status", "status-processing")
+            val controller = controller(api.session())
+            show(controller)
+            controller.start()
+            idle()
+            controller.selectMethod("mobile_money")
+            controller.setPhone("670000000")
+            controller.payMobileMoney()
+            idle()
+            compose.onNodeWithTag("wajub-step-screen-otp").assertExists()
+            if (shown != null) {
+                compose.onNodeWithTag("wajub-step-hint", useUnmergedTree = true).assertTextContains(shown)
+            } else {
+                // The code prompt alone, never "sent to" with nothing after it.
+                compose.onNodeWithTag("wajub-step-hint", useUnmergedTree = true).assertDoesNotExist()
+            }
+            controller.hostGone()
+            idle()
+        }
+    }
+
+    @Test
+    fun `MM-14 offers the operator's code to dial`() {
+        val api = FakeApi()
+            .on("GET /pay/session", "session-payer-otp-announced")
+            .on("GET /pay/sdk-config", "sdk-config-sandbox")
+            .on("POST /pay/process", "process-payer-otp-accepted-sandbox")
+            .on("GET /pay/status", "status-processing")
+        val controller = controller(api.session())
+        show(controller)
+        controller.start()
+        idle()
+        controller.selectMethod("mobile_money")
+        idle()
+        compose.onNodeWithTag("wajub-momo-hint", useUnmergedTree = true)
+            .assertTextContains("For this payment, you will generate a code by dialing *144*4*6#: the next step guides you.")
+        controller.setPhone("70000000")
+        idle()
+        compose.onNodeWithTag("wajub-pay").performScrollTo().performClick()
+        idle()
+        compose.onNodeWithTag("wajub-payer-otp").assertExists()
+        assertEquals(0, api.count("POST /pay/process"), "the code is asked for first")
+        compose.onNodeWithText("Generate your payment code").assertExists()
+        compose.onNodeWithTag("wajub-payer-otp-amount", useUnmergedTree = true).assertTextContains("1000 XOF")
+        compose.onNodeWithText("1. On the phone of the Orange Money account, dial *144*4*6#.").assertExists()
+        compose.onNodeWithTag("wajub-payer-otp-sandbox", useUnmergedTree = true)
+            .assertTextContains("Test mode: enter the code 123456. Any other code is refused.")
+
+        // The code opens the dialer, # written %23.
+        compose.onNodeWithTag("wajub-payer-otp-dial").performScrollTo().performClick()
+        idle()
+        val intent = assertNotNull(shadowOf(compose.activity).nextStartedActivity, "the dialer was opened")
+        assertEquals(Intent.ACTION_DIAL, intent.action)
+        assertEquals("tel:*144*4*6%23", intent.dataString)
+
+        // And copies as it is.
+        compose.onNodeWithTag("wajub-payer-otp-copy").performScrollTo().performClick()
+        idle()
+        val clipboard = compose.activity.getSystemService(android.content.ClipboardManager::class.java)
+        assertEquals("*144*4*6#", clipboard.primaryClip?.getItemAt(0)?.text?.toString())
+        compose.onNodeWithTag("wajub-payer-otp-copy").assertTextContains("Copied")
+        // The sheet's effects run on the test's frame clock.
+        compose.mainClock.advanceTimeBy(2_500)
+        compose.waitForIdle()
+        compose.onNodeWithTag("wajub-payer-otp-copy").assertTextEquals("Copy")
+
+        // Typing the whole code sends nothing: Confirm payment does.
+        compose.onNodeWithTag("wajub-payer-otp-code").performScrollTo().performTextInput("123456")
+        idle()
+        assertEquals("123456", assertIs<SheetScreen.PayerOtp>(controller.screen.value).code)
+        assertEquals(0, api.count("POST /pay/process"))
+        compose.onNodeWithTag("wajub-payer-otp-submit").performScrollTo().performClick()
+        idle()
+        assertEquals("123456", api.lastBody("POST /pay/process").getJSONObject("data").getString("otp"))
+        compose.onNodeWithText("Code received. Your operator is processing the payment, this can take a moment.").assertExists()
+        // Confirmed in the operator's menu already: no phone line, no notification to expect.
+        compose.onNodeWithText("You will receive a notification to confirm the payment").assertDoesNotExist()
+        compose.onNodeWithText("+22670000000", substring = true).assertDoesNotExist()
+    }
+
+    @Test
+    fun `MM-13 disables Pay when no operator is offered any more`() {
+        val api = FakeApi()
+            .on("GET /pay/session", "session-payer-otp-announced")
+            .on("GET /pay/sdk-config", "sdk-config-sandbox")
+            .on("POST /pay/process", "process-402-payer-otp-attempts-exceeded")
+        val controller = controller(api.session())
+        show(controller)
+        controller.start()
+        idle()
+        controller.selectMethod("mobile_money")
+        controller.setPhone("70000000")
+        controller.payMobileMoney()
+        controller.setPayerOtpCode("654323")
+        controller.submitPayerOtp()
+        idle()
+        val text = "Your operator refused too many codes for this payment. Choose another payment method."
+        compose.onNodeWithTag("wajub-banner").assertTextContains(text)
+        compose.onNodeWithTag("wajub-operator-orange").assertIsNotEnabled().assertTextContains(text)
+        compose.onAllNodesWithText(text).assertCountEquals(2)
+        compose.onNodeWithTag("wajub-pay").assertIsNotEnabled()
+    }
+
+    @Test
+    fun `MM-13 shows no amount the operator did not give`() {
+        val api = FakeApi()
+            .on("GET /pay/session", "session-payer-otp-announced") { body ->
+                body.getJSONArray("channels").getJSONObject(0).getJSONObject("payer_otp").apply {
+                    remove("amount")
+                    remove("steps")
+                }
+            }
+            .on("GET /pay/sdk-config", "sdk-config-sandbox")
+        val controller = controller(api.session())
+        show(controller)
+        controller.start()
+        idle()
+        controller.selectMethod("mobile_money")
+        controller.setPhone("70000000")
+        controller.payMobileMoney()
+        idle()
+        compose.onNodeWithTag("wajub-payer-otp").assertExists()
+        compose.onNodeWithTag("wajub-payer-otp-amount").assertDoesNotExist()
+        compose.onNodeWithText("2. Generate a payment code for the exact amount.").assertExists()
+        compose.onNodeWithText("XOF", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("{amount}", substring = true).assertDoesNotExist()
+        // Small rules of the screen's texts.
+        assertEquals("No tries left.", SheetStrings.of(com.wajub.mobile.model.WajubLanguage.En).tries(-1))
+        assertEquals("Il vous reste 2 essais.", SheetStrings.of(com.wajub.mobile.model.WajubLanguage.Fr).tries(2))
+        assertEquals("tel:*144*4*6%23", dialUri(" *144*4*6 # ").toString())
     }
 
     @Test
@@ -378,7 +552,7 @@ class PaymentSheetUiTest {
             .on("POST /pay/cancel", "cancel-200")
         val results = mutableListOf<CheckoutResult>()
         val tick = mutableIntStateOf(0)
-        val options = PresentOptions(locale = "en", realtime = RealtimeOptions(enabled = false))
+        val options = PresentOptions(locale = "en")
         compose.setContent {
             tick.intValue
             // As integrators write it: a session created in the composable.
@@ -497,7 +671,7 @@ class PaymentSheetUiTest {
         val api = FakeApi().on("GET /pay/session", "session-sandbox-cm").on("GET /pay/sdk-config", "sdk-config-sandbox")
         val first = mutableListOf<CheckoutResult>()
         val second = mutableListOf<CheckoutResult>()
-        val options = PresentOptions(locale = "en", realtime = RealtimeOptions(enabled = false))
+        val options = PresentOptions(locale = "en")
         compose.setContent {
             PaymentSheet(api.session(), options) { first += it }
             PaymentSheet(api.session(), options) { second += it }
@@ -536,7 +710,6 @@ class CallbackActivity : ComponentActivity() {
                 session!!,
                 PresentOptions(
                     locale = "en",
-                    realtime = RealtimeOptions(enabled = false),
                     callbacks = CheckoutCallbacks(onComplete = { log += "callbacks.onComplete in $me" }),
                 ),
             ) { log += "onComplete in $me" }

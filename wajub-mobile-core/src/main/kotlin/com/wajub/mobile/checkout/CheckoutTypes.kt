@@ -3,9 +3,8 @@ package com.wajub.mobile.checkout
 import com.wajub.mobile.Iso8601
 import com.wajub.mobile.model.SessionTransaction
 import com.wajub.mobile.model.WajubError
-import com.wajub.mobile.realtime.RealtimeOptions
 
-/** Wajub.js's 17 checkout states; [value] is the exact name (`3DS_REQUIRED`). */
+/** The sheet's states; [value] is the state's name as a string (`3DS_REQUIRED`). */
 enum class CheckoutState(val value: String) {
     INITIATED("INITIATED"),
     COLLECTING_DETAILS("COLLECTING_DETAILS"),
@@ -24,6 +23,9 @@ enum class CheckoutState(val value: String) {
     FAILED("FAILED"),
     EXPIRED("EXPIRED"),
     CANCELLED("CANCELLED"),
+
+    /** The payer generates a code in the operator's menu, for the exact amount, and enters it. */
+    PAYER_OTP_REQUIRED("PAYER_OTP_REQUIRED"),
 }
 
 /** How the sheet looks while it loads. */
@@ -35,7 +37,7 @@ enum class LoaderStyle {
     Spinner,
 }
 
-/** Wajub.js `fields.operator`: how the operator list shows. */
+/** How the operator list shows. */
 enum class OperatorMode {
     /** The list is always shown (default). */
     Choose,
@@ -44,9 +46,9 @@ enum class OperatorMode {
     Detect,
 }
 
-/** `PresentOptions.mobileMoney`. */
+/** The Mobile Money form's options. */
 data class MobileMoneyOptions(
-    /** ISO-2 country to start on (Wajub.js `fields.country`). */
+    /** ISO-2 country to start on. */
     val country: String? = null,
     /** Hides the country selector when [country] is set. */
     val countryLocked: Boolean = false,
@@ -55,20 +57,18 @@ data class MobileMoneyOptions(
 
 /** Everything `PaymentSheet` (and its `present`) takes. */
 data class PresentOptions(
-    /** The `authorization_token` your server got from `POST /payments`. */
+    /** The `authorization_token` your server got when it created the payment. */
     val sessionToken: String = "",
     /** `fr` or `en`; else the session's language, else the device's. */
     val locale: String? = null,
     val appearance: Appearance? = null,
     val loader: LoaderStyle = LoaderStyle.Skeleton,
-    /** Milliseconds before a sheet still loading reports `ready_timeout`; 0 disables it. */
+    /** Milliseconds a sheet may load before it shows an error with Retry (`ready_timeout`); 0 disables it. */
     val readyTimeout: Long = 15_000L,
-    /** An https universal/app link back into your app, sent to provider pages as `return_url`. */
+    /** An https App Link back into your app, where the payer lands after a payment provider's page. */
     val returnUrl: String? = null,
     val mobileMoney: MobileMoneyOptions = MobileMoneyOptions(),
-    /** Another socket host (self-hosted Reverb/Soketi), or no realtime at all. */
-    val realtime: RealtimeOptions? = null,
-    /** A dismiss before any attempt cancels the payment (`POST /pay/cancel`). */
+    /** Closing the sheet before any payment attempt cancels the payment. */
     val cancelOnDismiss: Boolean = true,
     /** Milliseconds before the success screen closes itself; 0 keeps it. */
     val autoCloseSuccess: Long = 3_000L,
@@ -77,13 +77,13 @@ data class PresentOptions(
     // The token stays out of logs.
     override fun toString(): String =
         "PresentOptions(sessionToken=<redacted>, locale=$locale, appearance=$appearance, loader=$loader, " +
-            "readyTimeout=$readyTimeout, returnUrl=$returnUrl, mobileMoney=$mobileMoney, realtime=$realtime, " +
+            "readyTimeout=$readyTimeout, returnUrl=$returnUrl, mobileMoney=$mobileMoney, " +
             "cancelOnDismiss=$cancelOnDismiss, autoCloseSuccess=$autoCloseSuccess)"
 }
 
 /**
- * The sheet's callbacks, all optional, all on the main thread, in Wajub.js's
- * order: `onReady` → `onStateChange`… → `onPaymentStarted`, `onRedirect` →
+ * The sheet's callbacks, all optional, all on the main thread, in this order:
+ * `onReady` → `onStateChange`… → `onPaymentStarted`, `onRedirect` →
  * `onSuccess` / `onError` / `onCancel` → `onComplete` (exactly once).
  * A callback that throws does not break the sheet.
  */
@@ -94,7 +94,7 @@ class CheckoutCallbacks(
     val onStateChange: ((StateChangeEvent) -> Unit)? = null,
     /** The sheet could not offer a payment: `session_not_found`, `load_error`, `ready_timeout`… */
     val onLoadError: ((WajubError) -> Unit)? = null,
-    /** The first 2xx of an attempt: from now on a dismiss resolves `processing`. */
+    /** The payment request is accepted: from now on, closing the sheet resolves `processing`. */
     val onPaymentStarted: ((PaymentStartedEvent) -> Unit)? = null,
     /** Right before the SDK opens a page in the browser. */
     val onRedirect: ((RedirectEvent) -> Unit)? = null,
@@ -109,14 +109,14 @@ class CheckoutCallbacks(
 )
 
 data class ReadyEvent(
-    /** `transaction.id`. */
+    /** Wajub's payment id. */
     val sessionId: String,
     /** `sandbox` or `live`. */
     val environment: String,
-    /** `amount_total`, major units. */
+    /** What the payer pays, fee included, in major units. */
     val amount: Double,
     val currency: String,
-    /** The channel slugs shown. */
+    /** The payment methods shown. */
     val methods: List<String>,
 )
 
@@ -131,7 +131,7 @@ data class PaymentStartedEvent(
     val channel: String,
 )
 
-/** Wajub.js's `redirect` event. */
+/** A payment provider's page is about to open. */
 data class RedirectEvent(
     val url: String,
     val method: String = "GET",
@@ -145,22 +145,22 @@ enum class CancelReason(val value: String) {
 
 data class CancelEvent(
     val reason: CancelReason,
-    /** The merchant's callback the cancel answered with. */
+    /** The merchant's redirect URL, after a cancel. */
     val redirectUrl: String?,
 )
 
-/** Wajub.js's `PaymentSuccess`. Confirm on your server before delivering. */
+/** A paid payment, as the payer saw it. Confirm on your server before delivering. */
 data class PaymentSuccess(
-    /** `transaction.id`. */
+    /** Wajub's payment id: what `GET /payments/{id}` takes. */
     val id: String,
     /** The merchant's reference. */
     val reference: String?,
-    /** `amount_total`, major units. */
+    /** What the payer paid, fee included, in major units: what was charged on the method they paid with. */
     val amount: Double,
     val currency: String,
-    /** `mobile_money`, `card`, `wallet`, or `unknown` when it was already paid at load. */
+    /** `mobile_money`, `card`, `wallet`, or `unknown` when it was paid before the sheet opened. */
     val method: String,
-    /** ISO 8601: `terminal_at`, else `updated_at`, else now. */
+    /** When it was paid, ISO 8601. */
     val timestamp: String,
     val receiptUrl: String? = null,
 ) {

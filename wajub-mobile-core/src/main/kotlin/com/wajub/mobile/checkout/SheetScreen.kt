@@ -3,6 +3,7 @@ package com.wajub.mobile.checkout
 import com.wajub.mobile.mobilemoney.MobileMoney
 import com.wajub.mobile.mobilemoney.MobileMoneyCountry
 import com.wajub.mobile.mobilemoney.OperatorChoice
+import com.wajub.mobile.model.PayerOtpInstructions
 import com.wajub.mobile.model.StepKind
 import com.wajub.mobile.model.WajubError
 import com.wajub.mobile.model.WajubLanguage
@@ -10,7 +11,7 @@ import java.text.NumberFormat
 import java.util.Currency
 import java.util.Locale
 
-/** What the sheet shows; each screen reports a [CheckoutState] (states.md §2). */
+/** What the sheet shows; each screen reports a [CheckoutState]. */
 sealed class SheetScreen {
     /** No state yet: the sheet is not ready. */
     data object Loading : SheetScreen()
@@ -26,14 +27,31 @@ sealed class SheetScreen {
         val mobileMoney: MobileMoneyForm? = null,
         val card: CardForm? = null,
         val busy: Boolean = false,
-        /** An error tied to no field (a 422 on `request`, `channel`…). */
+        /** An error tied to no field. */
         val banner: String? = null,
         /** Another method can be chosen ("Change"). */
         val canChangeMethod: Boolean = false,
     ) : SheetScreen()
 
-    /** A push was sent to the phone. */
-    data class Approval(val instruction: String?, val phone: String?) : SheetScreen()
+    /** A push was sent to the phone; [codeReceived]: after the payer's own code, the operator is processing it. */
+    data class Approval(val instruction: String?, val phone: String?, val codeReceived: Boolean = false) : SheetScreen()
+
+    /**
+     * The code the payer generates in the operator's menu for the exact amount,
+     * then enters here; [busy] while it is sent.
+     */
+    data class PayerOtp(
+        val instructions: PayerOtpInstructions,
+        /** As typed: digits only. */
+        val code: String = "",
+        /** Why the last code was not taken. */
+        val error: String? = null,
+        /** With a code the operator refused: the codes it may still refuse. */
+        val attemptsRemaining: Int? = null,
+        /** In a test payment: the code that is taken. */
+        val sandboxCode: String? = null,
+        val busy: Boolean = false,
+    ) : SheetScreen()
 
     data class Ussd(val instruction: String?) : SheetScreen()
 
@@ -41,7 +59,7 @@ sealed class SheetScreen {
     data class Step(
         val kind: StepKind,
         val stepId: String,
-        /** `otp_masked_contact`, the API's (English) instruction, or the masked email. */
+        /** Where the code was sent, the provider's instruction (in English), or the masked email. */
         val hint: String?,
         val values: Map<String, String> = emptyMap(),
         val fieldErrors: Map<String, String> = emptyMap(),
@@ -52,14 +70,27 @@ sealed class SheetScreen {
         val resendAt: Long,
         /** Clock time the 3-D Secure code expires. */
         val expiresAt: Long? = null,
-    ) : SheetScreen()
+    ) : SheetScreen() {
+        /**
+         * For a code (OTP, sandbox 3-D Secure): the masked number or address it
+         * was sent to, or null when the provider names none.
+         */
+        val sentTo: String?
+            get() {
+                if (kind != StepKind.Otp && kind != StepKind.ThreeDs) return null
+                val text = hint?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+                if (text.none { it.isWhitespace() }) return text
+                // An older answer gave the provider's sentence: keep its masked contact only.
+                return text.split(Regex("\\s+")).lastOrNull { '*' in it || '@' in it }?.trim('.', ',', ':', ';', '(', ')')
+            }
+    }
 
     /** Waiting for the outcome. [url]: a page to reopen ("Continue payment"). */
     data class Pending(
         val url: String? = null,
         /** 3-D Secure in the browser. */
         val threeDs: Boolean = false,
-        /** Watched for 15 minutes without an outcome: "you will be notified". */
+        /** No outcome after a long wait: "you will be notified". */
         val capped: Boolean = false,
     ) : SheetScreen()
 
@@ -76,7 +107,7 @@ sealed class SheetScreen {
     data class Ended(val error: WajubError, val state: CheckoutState) : SheetScreen()
 }
 
-/** The Mobile Money form (spec §6). */
+/** The Mobile Money form. */
 data class MobileMoneyForm(
     /** The countries the selector lists (ISO-2). */
     val countries: List<String>,
@@ -94,6 +125,8 @@ data class MobileMoneyForm(
     val listOpened: Boolean = false,
     val phoneError: String? = null,
     val operatorError: String? = null,
+    /** Operators not offered again for this payment (too many codes refused), by id, with why. */
+    val unavailable: Map<String, String> = emptyMap(),
 ) {
     val countryInfo: MobileMoneyCountry? get() = MobileMoney.data().country(country)
 
@@ -122,7 +155,7 @@ data class CardForm(
     val errors: Map<String, String> = emptyMap(),
 ) {
     companion object {
-        /** The sandbox test-card fields, as `/pay/process` names them. */
+        /** The sandbox test-card fields. */
         val SANDBOX_FIELDS = listOf("card.number", "card_holder", "expiry_month", "expiry_year", "cvv")
     }
 }

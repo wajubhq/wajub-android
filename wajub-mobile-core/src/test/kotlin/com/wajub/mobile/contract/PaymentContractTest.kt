@@ -474,5 +474,21 @@ class PaymentContractTest {
         momoCheckout(declined, declinedEvents).payMobileMoney()
         runCurrent()
         assertTrue(declinedEvents.events.none { it.startsWith("started:") })
+
+        // The payer's own code asked for: nothing was charged. It starts on the answer to the code.
+        val coded = cmApi()
+            .on("POST /pay/process", Fixtures.response("process-payer-otp-required"), Fixtures.response("process-payer-otp-accepted-sandbox"))
+            .on("GET /pay/status", Fixtures.response("status-processing"))
+        val codedEvents = Recorder()
+        val controller2 = momoCheckout(coded, codedEvents)
+        controller2.payMobileMoney()
+        runCurrent()
+        assertIs<SheetScreen.PayerOtp>(controller2.screen.value)
+        assertTrue(codedEvents.events.none { it.startsWith("started:") })
+        controller2.setPayerOtpCode("123456")
+        controller2.submitPayerOtp()
+        runCurrent()
+        advanceTimeBy(20_000)
+        assertEquals(1, codedEvents.events.count { it.startsWith("started:") })
     }
 }

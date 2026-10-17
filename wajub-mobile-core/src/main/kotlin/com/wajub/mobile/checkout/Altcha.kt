@@ -5,7 +5,7 @@ import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import java.security.MessageDigest
 
-/** A solved Altcha challenge, sent as `data.altcha` / `altcha`. */
+/** The answer to a payment's security check. */
 data class AltchaSolution(
     val algorithm: String,
     val challenge: String,
@@ -22,7 +22,7 @@ data class AltchaSolution(
     )
 }
 
-/** The proof of work some sessions ask for before paying (spec §15). */
+/** The security check some payments ask for before paying. */
 object Altcha {
     /**
      * The `n` in `[0, maxnumber]` whose `SHA-256(salt + n)` is the challenge,

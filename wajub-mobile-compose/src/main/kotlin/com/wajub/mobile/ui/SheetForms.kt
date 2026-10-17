@@ -52,7 +52,8 @@ import com.wajub.mobile.model.WajubLanguage
 internal fun FormScreen(controller: CheckoutController, screen: SheetScreen.Form, session: SessionData?, strings: SheetStrings, language: WajubLanguage) {
     val look = LocalSheetLook.current
     val txn = session?.transaction
-    val payLabel = txn?.let { strings.payAmount.fill("amount" to formatAmount(it.payableAmount, it.currency, language)) } ?: strings.pay
+    // What the payer pays on the operator or method chosen.
+    val payLabel = txn?.let { strings.payAmount.fill("amount" to formatAmount(controller.amountDue(screen), it.currency, language)) } ?: strings.pay
     Column(verticalArrangement = Arrangement.spacedBy(look.gapRow.dp), modifier = Modifier.testTag("wajub-form-${screen.method.id}")) {
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
             Text(
@@ -75,7 +76,8 @@ internal fun FormScreen(controller: CheckoutController, screen: SheetScreen.Form
                 strings.payWith.fill("name" to screen.method.name), controller::payWallet, busy = screen.busy, tag = "wajub-pay",
             )
             screen.mobileMoney != null -> PrimaryButton(
-                payLabel, controller::payMobileMoney, enabled = screen.mobileMoney!!.choices.isNotEmpty(), busy = screen.busy, tag = "wajub-pay",
+                // No operator offered any more (exhausted, out of its limits): nothing to pay with.
+                payLabel, controller::payMobileMoney, enabled = screen.mobileMoney!!.selected != null, busy = screen.busy, tag = "wajub-pay",
             )
             else -> PrimaryButton(payLabel, controller::payCard, busy = screen.busy, tag = "wajub-pay")
         }
@@ -148,17 +150,20 @@ private fun MobileMoneyFields(
     if (form.listVisible) {
         Column(verticalArrangement = Arrangement.spacedBy((look.spacingUnit * 2).dp)) {
             FieldLabel(strings.operator)
-            val amount = controller.sessionData.value?.transaction?.payableAmount ?: 0.0
+            val payment = controller.transaction?.payableAmount ?: 0.0
             for (choice in form.choices) {
-                val disabled = controller.outOfLimits(choice)
+                val amount = choice.amountTotal ?: payment
+                // Too many codes refused there: not offered again, with why.
+                val unavailable = form.unavailable[choice.id]
+                val disabled = unavailable != null || controller.outOfLimits(choice)
                 ChoiceRow(
                     selected = form.selected == choice.id,
                     enabled = !busy && !disabled,
                     onClick = { controller.pickOperator(choice.id) },
                     tag = "wajub-operator-${choice.id}",
-                    leading = { Logo(choice.logo, choice.badge, size = 32.dp, tag = "wajub-operator-logo-${choice.id}") },
+                    leading = { Logo(choice.logo, choice.badge, size = 32.dp, tag = "wajub-operator-logo-${choice.id}", fallback = choice.logoPng) },
                     title = choice.label,
-                    subtitle = if (disabled) limitText(choice.minAmount, choice.maxAmount, amount, currency, strings, language) else null,
+                    subtitle = unavailable ?: if (disabled) limitText(choice.minAmount, choice.maxAmount, amount, currency, strings, language) else null,
                     trailing = { RadioDot(form.selected == choice.id) },
                 )
             }
@@ -178,7 +183,7 @@ private fun MobileMoneyFields(
             form.badge?.let { choice ->
                 {
                     IconButton(onClick = controller::openOperatorList, modifier = Modifier.testTag("wajub-operator-badge")) {
-                        Logo(choice.logo, choice.badge, size = 28.dp, tag = "wajub-badge-logo")
+                        Logo(choice.logo, choice.badge, size = 28.dp, tag = "wajub-badge-logo", fallback = choice.logoPng)
                     }
                 }
             }
@@ -190,7 +195,14 @@ private fun MobileMoneyFields(
         enabled = !busy,
     )
     if (!form.listVisible) LinkButton(strings.otherOperator, controller::openOperatorList, tag = "wajub-open-operators")
-    Hint(strings.momoInstructions)
+    // An operator that takes the payer's own code says so before Pay.
+    val announced = form.selectedChoice?.payerOtp
+    val hint = when {
+        announced == null -> strings.momoInstructions
+        announced.ussdCode != null -> strings.payerOtpFormHint.fill("ussd_code" to announced.ussdCode!!)
+        else -> strings.payerOtpFormHintGeneric
+    }
+    Hint(hint, tag = "wajub-momo-hint")
 }
 
 /** Groups the digits by two as the payer types (`67 12 34 56 7`). */
@@ -285,8 +297,9 @@ internal fun StepScreen(controller: CheckoutController, step: SheetScreen.Step, 
     Column(verticalArrangement = Arrangement.spacedBy(look.gapRow.dp), modifier = Modifier.testTag("wajub-step-screen-${step.kind.path}")) {
         Text(title, style = MaterialTheme.typography.titleMedium, color = c.text.color())
         val hint = when (step.kind) {
-            StepKind.Otp -> step.hint?.let { strings.otpSentTo.fill("contact" to it) }
-            StepKind.ThreeDs -> step.hint?.let { strings.threeDsSentTo.fill("email" to it) }
+            // The masked contact only; none named: the code prompt alone.
+            StepKind.Otp -> step.sentTo?.let { strings.otpSentTo.fill("contact" to it) }
+            StepKind.ThreeDs -> step.sentTo?.let { strings.threeDsSentTo.fill("email" to it) }
             // The API's own instruction, in English: secondary text.
             else -> step.hint
         }

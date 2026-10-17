@@ -25,7 +25,6 @@ import com.wajub.mobile.checkout.CheckoutController
 import com.wajub.mobile.checkout.CheckoutResult
 import com.wajub.mobile.checkout.PresentOptions
 import com.wajub.mobile.checkout.SheetScreen
-import com.wajub.mobile.realtime.RealtimeOptions
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Protocol
@@ -83,7 +82,7 @@ class LatchApi {
                     .protocol(Protocol.HTTP_1_1)
                     .code(file.getInt("http_status"))
                     .message("fake")
-                    .body(file.getJSONObject("body").toString().toResponseBody("application/json".toMediaType()))
+                    .body(Fixtures.served(fixture).toString().toResponseBody("application/json".toMediaType()))
                     .build()
             }.build(),
         )
@@ -136,7 +135,7 @@ class HostActivity : ComponentActivity() {
     companion object {
         var session: WajubSession? = null
         var secondSession: WajubSession? = null
-        var options = PresentOptions(locale = "en", realtime = RealtimeOptions(enabled = false))
+        var options = PresentOptions(locale = "en")
         val first = mutableStateOf(true)
         val second = mutableStateOf(false)
         val log: MutableList<String> = CopyOnWriteArrayList()
@@ -157,7 +156,7 @@ class HostActivity : ComponentActivity() {
         fun reset(first: WajubSession, second: WajubSession? = null) {
             session = first
             secondSession = second
-            options = PresentOptions(locale = "en", realtime = RealtimeOptions(enabled = false))
+            options = PresentOptions(locale = "en")
             this.first.value = true
             this.second.value = false
             log.clear()
@@ -331,7 +330,6 @@ class HostLifecycleUiTest {
         val results = mutableListOf<CheckoutResult>()
         val options = PresentOptions(
             locale = "en",
-            realtime = RealtimeOptions(enabled = false),
             callbacks = CheckoutCallbacks(
                 onError = { events += "error:${it.code}" },
                 onCancel = { events += "cancel:${it.reason.value}" },

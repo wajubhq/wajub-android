@@ -8,6 +8,7 @@ import com.wajub.mobile.mobilemoney.MobileMoney
 import com.wajub.mobile.mobilemoney.MobileMoneyRules
 import com.wajub.mobile.mobilemoney.OperatorChoice
 import com.wajub.mobile.model.ErrorCatalog
+import com.wajub.mobile.model.PayerOtpInstructions
 import com.wajub.mobile.model.PaymentStatus
 import com.wajub.mobile.model.ProcessOutcome
 import com.wajub.mobile.model.ProcessRequest
@@ -46,10 +47,9 @@ import java.util.logging.Logger
 import kotlin.random.Random
 
 /**
- * The payment sheet's engine, without its UI: loading, methods, forms,
- * answers, confirmation steps, watching, cancel and dismiss — the states,
- * callbacks and result of states.md. `PaymentSheet` draws [screen] and
- * forwards the payer's actions; an app can draw its own UI on it the same way.
+ * The payment sheet without its UI: it runs the payment, fires the callbacks
+ * and ends with a [CheckoutResult]. `PaymentSheet` draws [screen] and forwards
+ * the payer's actions; an app can draw its own UI on it the same way.
  *
  * Every method must be called on [scope]'s thread (the main thread), where the
  * callbacks run too. [start] once; the result arrives exactly once, through
@@ -85,7 +85,7 @@ class CheckoutController internal constructor(
 
     private val _language = MutableStateFlow(WajubLanguage.resolve(options.locale, null, deviceLanguage()))
 
-    /** The sheet's language (spec LD-09). */
+    /** The sheet's language. */
     val language: StateFlow<WajubLanguage> = _language.asStateFlow()
 
     private val _session = MutableStateFlow<SessionData?>(null)
@@ -100,12 +100,12 @@ class CheckoutController internal constructor(
 
     private val _cancellable = MutableStateFlow(false)
 
-    /** "Cancel payment" can be offered (README §14): a loaded `pending` session, nothing sent or seen processing. */
+    /** "Cancel payment" can be offered: the payment is loaded and no payment attempt is under way. */
     val cancellable: StateFlow<Boolean> = _cancellable.asStateFlow()
 
     private val _clientSession = MutableStateFlow<String?>(null)
 
-    /** The client session the payer left for (save it to complete it after process death). */
+    /** The provider's page the payer left for, if any (save it to finish the payment after the process dies). */
     val pendingClientSession: StateFlow<String?> = _clientSession.asStateFlow()
 
     private val _result = MutableStateFlow<CheckoutResult?>(null)
@@ -124,14 +124,36 @@ class CheckoutController internal constructor(
     var onFinished: ((CheckoutResult) -> Unit)? = null
 
     /**
-     * Every answer to a payment request — `/pay/process`, `/pay/client-session`,
-     * and (`completion` true) `/pay/client-session/complete` — before the
-     * sheet acts on it. The 1.x `PaymentSheet` reports its results from it.
+     * Every answer to a payment request, before the sheet acts on it;
+     * [completion] is true for the answer read once the payer is back from a
+     * provider's page.
      */
     var onAnswer: ((outcome: ProcessOutcome, completion: Boolean) -> Unit)? = null
 
     /** The payment as last seen (from the session, an answer, or the status). */
     val transaction: SessionTransaction? get() = lastTransaction
+
+    /**
+     * What the payer pays on [screen], in major units of the payment's currency:
+     * on a form and on the code screen, the price of the operator or method
+     * chosen (the payer's fee may depend on it); elsewhere the payment's amount,
+     * which is what was charged once a payment request is answered.
+     */
+    fun amountDue(screen: SheetScreen = _screen.value): Double {
+        val form = when (screen) {
+            is SheetScreen.Form -> screen
+            // The code is generated for the price of the channel it pays on.
+            is SheetScreen.PayerOtp -> payerOtpRequest?.form ?: return selectionBase()
+            is SheetScreen.Methods -> return selectionBase()
+            else -> return lastTransaction?.payableAmount ?: 0.0
+        }
+        form.mobileMoney?.let { return it.selectedChoice?.amountTotal ?: selectionBase() }
+        return form.method.amountTotal ?: selectionBase()
+    }
+
+    // While the payer chooses: the payment's amount as it loaded, not the price of an attempt that ended.
+    private fun selectionBase(): Double =
+        (_session.value?.transaction ?: lastTransaction)?.payableAmount ?: 0.0
 
     private val lang: WajubLanguage get() = _language.value
     private var started = false
@@ -169,6 +191,10 @@ class CheckoutController internal constructor(
     private var attemptStartedAt: Long? = null
     private var knownErrorCode: String? = null
     private var errorCodeBeforeAttempt: String? = null
+    // Whether the refusal left on the payment is known: an older API's session
+    // leaves `error_code` out, and only a status read tells it then.
+    private var errorCodeKnown = true
+    private var errorCodeBeforeAttemptKnown = true
     private var threeDsExpired = false
     // A solution is good for one request: the next one solves a new challenge.
     private var altcha: Deferred<AltchaSolution?>? = null
@@ -181,6 +207,12 @@ class CheckoutController internal constructor(
     private var lastSeen: PaymentStatus? = null
     private var sawProcessing = false
     private var cancelling: CancelReason? = null
+    private var hostLeftDuringCancel = false
+
+    // The Mobile Money request a code the payer generates goes with (README §6.7),
+    // and whether the code of this attempt was sent.
+    private var payerOtpRequest: PayerOtpRequest? = null
+    private var payerOtpSent = false
 
     // Runs the cancel: it must settle the sheet even when the host's scope is gone.
     private val detached = CoroutineScope(scope.coroutineContext.minusKey(Job) + SupervisorJob())
@@ -227,7 +259,7 @@ class CheckoutController internal constructor(
         load()
     }
 
-    /** Retry of a load error (`load_error`, `ready_timeout`): the requests start again. */
+    /** Retry of a load error (`load_error`, `ready_timeout`): the payment loads again. */
     fun retryLoad() {
         val current = _screen.value
         if (finished || current !is SheetScreen.LoadError || !current.error.retryable) return
@@ -292,6 +324,7 @@ class CheckoutController internal constructor(
         lastTransaction = loaded.transaction
         // A refusal an earlier presentation left on the payment is not news to this one.
         knownErrorCode = loaded.transaction.errorCode
+        errorCodeKnown = loaded.transaction.errorCodeReported
         _language.value = WajubLanguage.resolve(options.locale, loaded.sessionLocale, deviceLanguage())
         session.language = lang
         val txn = loaded.transaction
@@ -394,7 +427,8 @@ class CheckoutController internal constructor(
     fun selectMethod(id: String) {
         if (!canEditForm()) return
         val chosen = methods.firstOrNull { it.id == id } ?: return
-        val amount = lastTransaction?.payableAmount ?: 0.0
+        // The limits take what the payer pays with this method.
+        val amount = chosen.amountTotal ?: selectionBase()
         if (chosen.outOfLimits(amount)) return
         method = chosen
         show(forms[chosen.id]?.copy(busy = false, banner = null) ?: formFor(chosen))
@@ -428,6 +462,7 @@ class CheckoutController internal constructor(
                         choices = choices,
                         selected = MobileMoneyRules.selection(enabledIds(choices), null, false, null),
                         operatorMode = options.mobileMoney.operatorMode,
+                        unavailable = unavailable(choices),
                     ),
                     canChangeMethod = canChange,
                 )
@@ -459,13 +494,11 @@ class CheckoutController internal constructor(
             sdkConfig == null || PaymentMethods.entryFor(channel, sdkConfig, choice.id)?.available != false
         }
 
-    private fun enabledIds(choices: List<OperatorChoice>): List<String> {
-        val amount = lastTransaction?.payableAmount ?: 0.0
-        return choices.filterNot { outOfLimits(it, amount) }.map { it.id }
-    }
+    private fun enabledIds(choices: List<OperatorChoice>): List<String> =
+        choices.filterNot { outOfLimits(it) || exhausted(it) }.map { it.id }
 
-    /** Whether [choice] cannot pay [amount] (its channel's limits). */
-    fun outOfLimits(choice: OperatorChoice, amount: Double = lastTransaction?.payableAmount ?: 0.0): Boolean =
+    /** Whether [choice] cannot pay [amount] (its channel's limits): by default, what the payer pays on it. */
+    fun outOfLimits(choice: OperatorChoice, amount: Double = choice.amountTotal ?: selectionBase()): Boolean =
         (choice.minAmount != null && amount < choice.minAmount) || (choice.maxAmount != null && amount > choice.maxAmount)
 
     private fun updateMobileMoney(change: (MobileMoneyForm) -> MobileMoneyForm) {
@@ -479,7 +512,7 @@ class CheckoutController internal constructor(
     fun setCountry(code: String) = updateMobileMoney { form ->
         val m = method ?: return@updateMobileMoney form
         val choices = choicesFor(m, code)
-        val detected = MobileMoney.data().country(code)?.let { MobileMoney.detectOperator(form.phone, it) }
+        val detected = MobileMoney.data().country(code)?.let { MobileMoney.detectOperator(form.phone, it, sandbox) }
         form.copy(
             country = code.uppercase(),
             choices = choices,
@@ -488,13 +521,15 @@ class CheckoutController internal constructor(
             selected = MobileMoneyRules.selection(enabledIds(choices), null, false, detected),
             phoneError = null,
             operatorError = null,
+            unavailable = unavailable(choices),
         )
     }
 
     /** The number as typed: detection preselects its operator until the payer picks one. */
     fun setPhone(text: String) = updateMobileMoney { form ->
-        val phone = text.filter { it.isDigit() || it == '+' }.take(16)
-        val detected = form.countryInfo?.let { MobileMoney.detectOperator(phone, it) }
+        // Digits only, as the field shows them (a `+` is dropped, as on the web).
+        val phone = asciiDigits(text).take(15)
+        val detected = form.countryInfo?.let { MobileMoney.detectOperator(phone, it, sandbox) }
         form.copy(
             phone = phone,
             detected = detected,
@@ -506,7 +541,7 @@ class CheckoutController internal constructor(
     /** The payer picked an operator: never overridden by detection. */
     fun pickOperator(id: String) = updateMobileMoney { form ->
         val choice = form.choices.firstOrNull { it.id == id }
-        if (choice == null || outOfLimits(choice)) {
+        if (choice == null || outOfLimits(choice) || exhausted(choice)) {
             form
         } else {
             form.copy(selected = id, pickedByHand = true, operatorError = null, phoneError = null)
@@ -521,12 +556,14 @@ class CheckoutController internal constructor(
         val current = _screen.value as? SheetScreen.Form ?: return
         val card = current.card ?: return
         if (current.busy || finished) return
-        show(current.copy(card = card.copy(values = card.values + (field to value), errors = card.errors - field), banner = null))
+        // Digits typed in another script are read as 0-9; the card's numbers keep their digits only.
+        val clean = if (field in CARD_NUMBER_FIELDS) asciiDigits(value) else asciiDigitsKeepingText(value)
+        show(current.copy(card = card.copy(values = card.values + (field to clean), errors = card.errors - field), banner = null))
     }
 
     // ── Paying ───────────────────────────────────────────────────────────
 
-    /** Pay with the Mobile Money form, after the web checkout's checks (spec §6.3). */
+    /** Pay with the Mobile Money form, once its number and operator pass their checks. */
     fun payMobileMoney() {
         val current = _screen.value as? SheetScreen.Form ?: return
         val form = current.mobileMoney ?: return
@@ -536,7 +573,6 @@ class CheckoutController internal constructor(
             show(current.copy(mobileMoney = form.copy(operatorError = message("operator_unavailable"))))
             return
         }
-        val sandbox = lastTransaction?.sandbox == true
         val labels = form.choices.associate { it.id to it.label }
         val issue = MobileMoneyRules.validate(form.phone, country, form.choices.map { it.id }, form.selected, { labels[it] ?: it }, sandbox)
         if (issue != null) {
@@ -546,10 +582,185 @@ class CheckoutController internal constructor(
             return
         }
         val choice = form.selectedChoice ?: return
-        val data = MobileMoneyRules.requestData(choice, form.phone, country, form.pickedByHand)
-        submit(current, choice.channelSlug) { solution, key ->
+        if (cancelling != null) return
+        exhaustedText(choice)?.let { text ->
+            // Too many codes refused there: never the code screen again on that channel.
+            show(current.copy(mobileMoney = form.copy(operatorError = text)))
+            return
+        }
+        val data = MobileMoneyRules.requestData(choice, form.phone, country, form.pickedByHand, sandbox)
+        val request = PayerOtpRequest(current, choice.channelSlug, data, exhaustedKey(choice))
+        val announced = choice.payerOtp
+        if (announced != null) {
+            // The channel takes the payer's own code: it is asked for first, and goes with the
+            // first payment request. Nothing is sent yet.
+            forms[current.method.id] = current
+            payerOtpRequest = request
+            payerOtpSent = false
+            showPayerOtp(announced, request)
+            return
+        }
+        submit(current, choice.channelSlug, payerOtp = request) { solution, key ->
             session.process(ProcessRequest(choice.channelSlug, withExtras(data, solution), key))
         }
+    }
+
+    // ── The payer's own code (README §6.7) ───────────────────────────────
+
+    private class PayerOtpRequest(
+        val form: SheetScreen.Form,
+        val channel: String,
+        val data: Map<String, Any?>,
+        /** The operator paid on, as [exhaustedChannels] keys it. */
+        val choiceKey: String,
+    ) {
+        var instructions: PayerOtpInstructions? = null
+    }
+
+    // The operators whose codes were refused too many times for this payment, with that error's text.
+    private val exhaustedChannels = mutableMapOf<String, String>()
+
+    private fun exhaustedKey(choice: OperatorChoice): String = "${choice.channelSlug}/${choice.id}"
+
+    // Its operator, or (a refusal no code of this sheet led to) its whole channel.
+    private fun exhaustedText(choice: OperatorChoice): String? =
+        exhaustedChannels[exhaustedKey(choice)] ?: exhaustedChannels["${choice.channelSlug}/*"]
+
+    private fun exhausted(choice: OperatorChoice): Boolean = exhaustedText(choice) != null
+
+    private fun unavailable(choices: List<OperatorChoice>): Map<String, String> =
+        choices.mapNotNull { choice -> exhaustedText(choice)?.let { choice.id to it } }.toMap()
+
+    private fun showPayerOtp(instructions: PayerOtpInstructions, request: PayerOtpRequest, error: String? = null, attemptsRemaining: Int? = null) {
+        request.instructions = instructions
+        show(
+            SheetScreen.PayerOtp(
+                instructions = instructions,
+                error = error,
+                attemptsRemaining = attemptsRemaining,
+                sandboxCode = if (sandbox) PayerOtpTexts.SANDBOX_CODE else null,
+            ),
+        )
+    }
+
+    /** The code the payer generated, as typed: digits only, at most its length. */
+    fun setPayerOtpCode(text: String) {
+        val current = _screen.value as? SheetScreen.PayerOtp ?: return
+        if (current.busy || finished) return
+        show(current.copy(code = asciiDigits(text).take(current.instructions.codeLengths.last), error = null))
+    }
+
+    /** "Confirm payment": the payment request again, with the payer's code. */
+    fun submitPayerOtp() {
+        val current = _screen.value as? SheetScreen.PayerOtp ?: return
+        val request = payerOtpRequest ?: return
+        if (current.busy || finished || cancelling != null) return
+        val code = current.code
+        // A code of the wrong length is not sent.
+        if (code.length !in current.instructions.codeLengths || code.any { it !in '0'..'9' }) {
+            show(current.copy(error = PayerOtpTexts.length(current.instructions, lang)))
+            return
+        }
+        val data = request.data + ("otp" to code)
+        submit(request.form, request.channel, busy = current.copy(busy = true, error = null), payerOtp = request, payerCode = true) { solution, key ->
+            session.process(ProcessRequest(request.channel, withExtras(data, solution), key))
+        }
+    }
+
+    /** "Use another payment method": back to the Mobile Money form. */
+    fun leavePayerOtp() {
+        val current = _screen.value as? SheetScreen.PayerOtp ?: return
+        val request = payerOtpRequest ?: return
+        if (current.busy || finished || cancelling != null) return
+        payerOtpSent = false
+        show(forms[request.form.method.id]?.copy(busy = false, banner = null) ?: request.form.copy(busy = false, banner = null))
+    }
+
+    // `action: payer_otp`: nothing was charged; the code is asked for, or asked again.
+    private fun onPayerOtpAsked(instructions: PayerOtpInstructions?) {
+        attemptInFlight = false
+        undecided = false
+        payerOtpSent = false
+        val request = payerOtpRequest
+        if (instructions == null || request == null) {
+            showFailed(WajubError.of("unsupported_action", lang))
+            return
+        }
+        when (instructions.reason) {
+            "invalid" -> showPayerOtp(instructions, request, error = PayerOtpTexts.length(instructions, lang))
+            "refused" -> showPayerOtp(instructions, request, error = PayerOtpTexts.refused(lang), attemptsRemaining = instructions.attemptsRemaining)
+            else -> showPayerOtp(instructions, request)
+        }
+    }
+
+    // The operator refused too many codes: that operator is not offered again for this
+    // payment, and the payer chooses another way to pay.
+    private fun onPayerOtpExhausted(error: WajubError, form: SheetScreen.Form?) {
+        unansweredKey = null
+        stopWatching()
+        refusedForGood(null)
+        payerOtpSent = false
+        (payerOtpRequest?.choiceKey ?: attemptChannel?.let { "$it/*" })?.let { exhaustedChannels[it] = error.message }
+        backToMobileMoney(error.message, payerOtpRequest?.form ?: form)
+        fire { callbacks.onError?.invoke(error) }
+    }
+
+    // A `pending` status refusing the payer's own code: the operator refused it later (back to the
+    // code screen; without a code from this sheet, the form), or refused too many. False for any other.
+    private fun onPayerOtpRefusal(status: PaymentStatus, error: WajubError): Boolean {
+        if (status.status != "pending") return false
+        val request = payerOtpRequest
+        return when (status.errorCode) {
+            "invalid_otp" -> {
+                val instructions = request?.instructions
+                if (payerOtpSent && request != null && instructions != null) {
+                    stopWatching()
+                    refusedForGood(null)
+                    payerOtpSent = false
+                    // How many tries are left is not known here.
+                    showPayerOtp(instructions, request, error = PayerOtpTexts.refused(lang))
+                } else {
+                    onPayerOtpRefusedElsewhere()
+                }
+                true
+            }
+            OTP_ATTEMPTS_EXCEEDED -> {
+                onPayerOtpExhausted(error, request?.form)
+                true
+            }
+            else -> false
+        }
+    }
+
+    // A code refused while none was sent from this sheet (sent from elsewhere): the form, with the refusal.
+    private fun onPayerOtpRefusedElsewhere() {
+        unansweredKey = null
+        stopWatching()
+        refusedForGood(null)
+        backToMobileMoney(PayerOtpTexts.refused(lang), null)
+    }
+
+    // The Mobile Money form with [banner], its unavailable operators disabled.
+    private fun backToMobileMoney(banner: String, form: SheetScreen.Form?) {
+        val m = form?.method ?: methods.firstOrNull { it.family == "mobile_money" }
+        val base = m?.let { forms[it.id] ?: form ?: formFor(it) }
+        if (m == null || base == null) {
+            showFailed(WajubError.of("payment_attempt_ended", lang))
+            return
+        }
+        method = m
+        val momo = base.mobileMoney?.let { momo ->
+            val selected = momo.selectedChoice?.takeIf { !exhausted(it) }?.id
+                ?: MobileMoneyRules.selection(enabledIds(momo.choices), null, false, momo.detected)
+            momo.copy(
+                unavailable = unavailable(momo.choices),
+                selected = selected,
+                pickedByHand = momo.pickedByHand && selected == momo.selected,
+            )
+        }
+        val back = base.copy(mobileMoney = momo, busy = false, banner = banner)
+        forms[m.id] = back.copy(banner = null)
+        show(back)
     }
 
     /** Pay a one-tap wallet (Djamo): nothing to collect. */
@@ -622,6 +833,7 @@ class CheckoutController internal constructor(
         val v = value?.trim().orEmpty()
         if (flavor is CardFlavor.Stripe) return null
         if (v.isEmpty()) return message("field_required")
+        if (field in CARD_NUMBER_FIELDS && v.any { it !in '0'..'9' }) return message("field_required")
         return when {
             field == "email" && PaymentMapper.hostedCardFieldError("email", v) != null -> message("invalid_email")
             field == "country" && PaymentMapper.hostedCardFieldError("country", v) != null -> message("field_required")
@@ -643,12 +855,22 @@ class CheckoutController internal constructor(
     // The attempt is in flight from the press (Altcha solving and card
     // tokenizing included): a dismiss then resolves `processing`, and nothing
     // is sent once the sheet has closed.
-    private fun submit(form: SheetScreen.Form, channel: String, request: suspend (AltchaSolution?, String) -> ProcessOutcome) {
+    private fun submit(
+        form: SheetScreen.Form,
+        channel: String,
+        busy: SheetScreen = form.copy(busy = true, banner = null),
+        payerOtp: PayerOtpRequest? = null,
+        payerCode: Boolean = false,
+        request: suspend (AltchaSolution?, String) -> ProcessOutcome,
+    ) {
         if (cancelling != null || finished) return
+        payerOtpRequest = payerOtp
+        payerOtpSent = payerCode
         attemptSeq++
         undecided = true
         attemptStartedAt = clock()
         errorCodeBeforeAttempt = knownErrorCode
+        errorCodeBeforeAttemptKnown = errorCodeKnown
         heldFailure = null
         threeDsExpired = false
         forms[form.method.id] = form
@@ -659,7 +881,11 @@ class CheckoutController internal constructor(
         altchaReloaded = false
         lastSeen = null
         sawProcessing = false
-        show(form.copy(busy = true, banner = null))
+        show(busy)
+        // Where the payer is back when nothing could be sent.
+        val idle = { text: String? ->
+            if (busy is SheetScreen.PayerOtp) busy.copy(busy = false, error = text) else form.copy(busy = false, banner = text)
+        }
         val run: suspend (String) -> Unit = run@{ key ->
             val solution = try {
                 takeAltcha()
@@ -668,7 +894,7 @@ class CheckoutController internal constructor(
                 if (finished) return@run
                 attemptInFlight = false
                 undecided = false
-                show(form.copy(busy = false, banner = failure.error.message))
+                show(idle(failure.error.message))
                 fire { callbacks.onError?.invoke(failure.error) }
                 return@run
             }
@@ -681,13 +907,14 @@ class CheckoutController internal constructor(
                 // Nothing was sent.
                 attemptInFlight = false
                 undecided = false
-                show(form.copy(busy = false, banner = failure.message))
+                show(idle(failure.message))
                 return@run
             }
             handleOutcome(outcome, form, key)
         }
         resubmit = { run(UUID.randomUUID().toString()) }
-        val key = unansweredKey ?: UUID.randomUUID().toString()
+        // The payer's code changes the request: a new key, whatever came before.
+        val key = unansweredKey?.takeIf { !payerCode } ?: UUID.randomUUID().toString()
         scope.launch { run(key) }
     }
 
@@ -710,7 +937,8 @@ class CheckoutController internal constructor(
             altcha = null
             return prepared.await() ?: throw AltchaUnavailable(WajubError.of("security_check_failed", lang))
         }
-        if (_session.value?.altcha == null) return null
+        // After an Altcha refusal the session is reloaded even if it had no challenge.
+        if (_session.value?.altcha == null && !altchaReloaded) return null
         val challenge = try {
             session.session(forceRefresh = true).altcha
         } catch (e: CancellationException) {
@@ -723,6 +951,21 @@ class CheckoutController internal constructor(
     }
 
     private fun family(): String = method?.family ?: "unknown"
+
+    // [text] with its decimal digits as 0-9, whatever script they were typed in; the rest as typed.
+    // By code point: some scripts' digits lie outside the BMP (Adlam, U+1E950…).
+    private fun asciiDigitsKeepingText(text: String): String = buildString {
+        text.codePoints().forEach { cp ->
+            val digit = Character.digit(cp, 10)
+            if (digit >= 0) append('0' + digit) else appendCodePoint(cp)
+        }
+    }
+
+    // The decimal digits of [text] as 0-9, whatever script the keyboard typed them in (٠٧ -> 07).
+    private fun asciiDigits(text: String): String = MobileMoney.sanitize(text)
+
+    // A sandbox session: its test numbers are valid and test their own operator.
+    private val sandbox: Boolean get() = (_session.value?.transaction ?: lastTransaction)?.sandbox == true
 
     private fun started() {
         attemptInFlight = true
@@ -749,55 +992,78 @@ class CheckoutController internal constructor(
                 outcome.transaction?.let { lastTransaction = it }
                 val seen = outcome.transaction?.status?.lowercase() in setOf("processing", "partial")
                 when (outcome.kind) {
-                    ProcessingKind.Approval -> show(SheetScreen.Approval(outcome.instruction, approvalPhone(form)))
+                    ProcessingKind.Approval -> show(SheetScreen.Approval(outcome.instruction, approvalPhone(form), codeReceived = payerOtpSent))
                     ProcessingKind.Ussd -> show(SheetScreen.Ussd(outcome.instruction))
                     ProcessingKind.Pending -> show(SheetScreen.Pending())
                 }
                 watch(seenProcessing = seen)
                 unansweredSince?.let { checkUnanswered(it, form) }
             }
-            is ProcessOutcome.RequiresAction -> {
+            is ProcessOutcome.RequiresAction -> if (outcome.action == PAYER_OTP_ACTION) {
+                // Nothing was charged: the attempt has not started. The refusal this answer leaves
+                // on the payment (a refused code) is the baseline: a status still carrying it is not news.
+                outcome.transaction?.let {
+                    lastTransaction = it
+                    if (it.errorCodeReported) {
+                        knownErrorCode = it.errorCode
+                        errorCodeKnown = true
+                    }
+                }
+                onPayerOtpAsked(outcome.payerOtp)
+            } else {
                 started()
                 outcome.transaction?.let { lastTransaction = it }
-                val step = outcome.step
-                when {
-                    outcome.action == "client_session" -> {
-                        val url = outcome.url
-                        if (url == null) {
-                            showFailed(WajubError.of("unsupported_action", lang))
-                            return
-                        }
-                        clientSessionId = outcome.clientSession?.id
-                        openPage(url, threeDs = false)
-                    }
-                    step != null && outcome.stepId != null -> {
-                        // The sandbox 3-D Secure code has its timeout; the other steps none.
-                        showStep(step, outcome.stepId, outcome.hint, outcome.timeoutSeconds)
-                        watch(seenProcessing = true)
-                    }
-                    outcome.url != null -> openPage(outcome.url, threeDs = outcome.action == "confirm_3ds")
-                    else -> showFailed(WajubError.of("unsupported_action", lang))
-                }
+                follow(outcome)
             }
             is ProcessOutcome.Failed -> {
-                // An action the sheet cannot take still came in a 2xx: the attempt started.
-                if (outcome.error.code == UNSUPPORTED_ACTION_CODE && outcome.error.httpStatus == null) started()
-                onRefused(outcome.error, outcome.transaction, form)
+                // An action the sheet cannot take still came in a 2xx: the attempt started — unless
+                // it asked for the payer's own code, which charged nothing.
+                if (outcome.error.code == UNSUPPORTED_ACTION_CODE && outcome.error.httpStatus == null && !outcome.chargedNothing) started()
+                onRefused(outcome.error, outcome.transaction, form, chargedNothing = outcome.chargedNothing)
             }
+        }
+    }
+
+    // A page to open, a step to show, or a client session's page: from a payment
+    // answer, or from a confirmation step that chains another one.
+    private fun follow(outcome: ProcessOutcome.RequiresAction) {
+        val step = outcome.step
+        when {
+            outcome.action == "client_session" -> {
+                val url = outcome.url
+                if (url == null) {
+                    showFailed(WajubError.of("unsupported_action", lang))
+                    return
+                }
+                clientSessionId = outcome.clientSession?.id
+                openPage(url, threeDs = false)
+            }
+            step != null && outcome.stepId != null -> {
+                // The sandbox 3-D Secure code has its timeout; the other steps none.
+                showStep(step, outcome.stepId, outcome.hint, outcome.timeoutSeconds)
+                watch(seenProcessing = true)
+            }
+            outcome.url != null -> openPage(outcome.url, threeDs = outcome.action == "confirm_3ds")
+            else -> showFailed(WajubError.of("unsupported_action", lang))
         }
     }
 
     private fun approvalPhone(form: SheetScreen.Form): String? {
         val momo = form.mobileMoney ?: return null
         val country = momo.countryInfo ?: return null
-        return MobileMoney.e164(momo.phone, country)
+        return MobileMoney.e164(momo.phone, country, sandbox)
     }
 
-    private suspend fun onRefused(error: WajubError, txn: SessionTransaction?, form: SheetScreen.Form) {
+    private suspend fun onRefused(error: WajubError, txn: SessionTransaction?, form: SheetScreen.Form, chargedNothing: Boolean = false) {
         attemptInFlight = false
-        // A refusal is definitive; an action the sheet cannot take came in a 2xx: still under way.
-        undecided = error.code == UNSUPPORTED_ACTION_CODE
-        error.declineCode?.let { knownErrorCode = it }
+        // A refusal is definitive; an action the sheet cannot take came in a 2xx: still under way
+        // (not the payer's own code asked without its instructions: nothing was charged).
+        undecided = error.code == UNSUPPORTED_ACTION_CODE && !chargedNothing
+        error.declineCode?.let {
+            // The refusal now on the payment: known, the baseline of the next attempt.
+            knownErrorCode = it
+            errorCodeKnown = true
+        }
         txn?.let { lastTransaction = it }
         when {
             error.httpStatus == 422 && altchaRefused(error) -> {
@@ -837,6 +1103,7 @@ class CheckoutController internal constructor(
                 }
             }
             error.httpStatus == 410 -> showEnded(SheetScreen.Expired(error))
+            error.code == OTP_ATTEMPTS_EXCEEDED -> onPayerOtpExhausted(error, payerOtpRequest?.form ?: form)
             error.code == "rate_limited" -> {
                 val seconds = error.retryAfterSeconds?.toLong() ?: 0L
                 showFailed(error, retryAt = clock() + seconds * 1000)
@@ -845,8 +1112,11 @@ class CheckoutController internal constructor(
         }
     }
 
+    // Recognised by its code; an answer without one (an older API) by its message,
+    // only when the session has a challenge.
     private fun altchaRefused(error: WajubError): Boolean =
-        _session.value?.altcha != null &&
+        error.code == "security_check_failed" ||
+            _session.value?.altcha != null &&
             ("altcha" in error.details || error.apiMessage?.contains("security challenge", ignoreCase = true) == true)
 
     // A 422 stays on the form: the phone's own message, field errors, or a banner (spec §9.1).
@@ -872,7 +1142,7 @@ class CheckoutController internal constructor(
     // "This phone number belongs to ORANGE (cm.orange) but…": the API names the operator.
     private fun mismatchMessage(form: MobileMoneyForm, apiText: String): String {
         val named = BELONGS_TO.find(apiText)?.groupValues?.get(1)?.lowercase()
-        val detected = named ?: form.countryInfo?.let { MobileMoney.detectOperator(form.phone, it) }
+        val detected = named ?: form.countryInfo?.let { MobileMoney.detectOperator(form.phone, it, sandbox) }
         val label = { id: String? ->
             form.choices.firstOrNull { it.id == id }?.label
                 ?: id?.let { MobileMoney.data().brandLabel(it) ?: it.uppercase() }.orEmpty()
@@ -983,12 +1253,13 @@ class CheckoutController internal constructor(
         val current = _screen.value as? SheetScreen.Step ?: return
         if (current.busy || finished) return
         val clean = when (field) {
-            "code", "pin" -> value.filter { it.isDigit() }.take(if (current.kind == StepKind.Pin) 6 else 10)
+            "code", "pin" -> asciiDigits(value).take(if (current.kind == StepKind.Pin) 6 else 10)
             // Digits, shown as YYYY-MM-DD while typed.
-            "birthday" -> value.filter { it.isDigit() }.take(8).let { d ->
+            "birthday" -> asciiDigits(value).take(8).let { d ->
                 listOfNotNull(d.take(4), d.drop(4).take(2).ifEmpty { null }, d.drop(6).ifEmpty { null }).joinToString("-")
             }
-            else -> value
+            // A phone or an address: its digits read as 0-9, the rest as typed.
+            else -> asciiDigitsKeepingText(value)
         }
         show(current.copy(values = current.values + (field to clean), fieldErrors = current.fieldErrors - field, error = null))
     }
@@ -1001,6 +1272,8 @@ class CheckoutController internal constructor(
             val v = current.values[field].orEmpty().trim()
             val ok = when {
                 v.isEmpty() -> false
+                // A code is ASCII digits only.
+                field in setOf("code", "pin") && v.any { it !in '0'..'9' } -> false
                 field == "code" && current.kind == StepKind.ThreeDs -> v.length in 4..8
                 field == "code" -> v.length in 4..10
                 field == "pin" -> v.length in 4..6
@@ -1030,7 +1303,7 @@ class CheckoutController internal constructor(
     private fun onStepResult(step: SheetScreen.Step, result: StepResult) {
         // A late answer (the status already decided) changes nothing.
         val current = _screen.value
-        if (finished || current !is SheetScreen.Step || current.stepId != step.stepId || !current.busy) return
+        if (finished || current !is SheetScreen.Step || current.stepId != step.stepId || current.kind != step.kind || !current.busy) return
         // The 3-D Secure code expired while it was being checked: a refusal ends it.
         if (step.kind == StepKind.ThreeDs && threeDsExpired && result !is StepResult.Accepted) {
             refusedForGood(null)
@@ -1041,6 +1314,21 @@ class CheckoutController internal constructor(
             is StepResult.Accepted -> {
                 val txn = result.transaction
                 txn?.let { lastTransaction = it }
+                // The provider asks for another step (a code after the birthday, a page after
+                // the PIN): followed as a payment answer. Paid only on the transaction's status.
+                when (val next = result.next) {
+                    is ProcessOutcome.RequiresAction -> {
+                        stepTimer?.cancel()
+                        follow(next)
+                        return
+                    }
+                    is ProcessOutcome.Failed -> {
+                        stepTimer?.cancel()
+                        showFailed(next.error)
+                        return
+                    }
+                    else -> Unit
+                }
                 when {
                     // 3-D Secure: verifying, until the status decides.
                     step.kind == StepKind.ThreeDs -> {
@@ -1091,7 +1379,7 @@ class CheckoutController internal constructor(
 
     private fun showIfStillOn(step: SheetScreen.Step, change: (SheetScreen.Step) -> SheetScreen.Step) {
         val current = _screen.value
-        if (current is SheetScreen.Step && current.stepId == step.stepId && !finished) show(change(current))
+        if (current is SheetScreen.Step && current.stepId == step.stepId && current.kind == step.kind && !finished) show(change(current))
     }
 
     /** "Resend code", offered 60 s after the step opened. */
@@ -1115,7 +1403,7 @@ class CheckoutController internal constructor(
             return
         }
         val data = _session.value ?: return
-        val w = session.watcher(data, options.realtime, seenProcessing, clock, random, connector, attemptStartedAt)
+        val w = session.watcher(data, seenProcessing, clock, random, connector, attemptStartedAt)
         watcher = w
         watchJob = scope.launch { w.events().collect { onWatchEvent(it) } }
     }
@@ -1132,7 +1420,10 @@ class CheckoutController internal constructor(
                 val seen = lastSeen
                 if (seen != null) {
                     // A refusal an earlier try left on the payment is not news.
-                    if (seen.status != "pending" || seen.errorCode != null && seen.errorCode != errorCodeBeforeAttempt) return@launch
+                    // A new refusal is this attempt's answer (decided as it was read); with the
+                    // earlier one unknown, no code is taken for it and the rule applies.
+                    if (seen.status != "pending") return@launch
+                    if (errorCodeBeforeAttemptKnown && seen.errorCode != null && seen.errorCode != errorCodeBeforeAttempt) return@launch
                     break
                 }
                 delay(UNANSWERED_RECHECK_MS)
@@ -1158,14 +1449,19 @@ class CheckoutController internal constructor(
         when (event) {
             is WatchEvent.StatusChanged -> {
                 lastSeen = event.status
-                event.status.errorCode?.let { knownErrorCode = it }
+                // A status says which refusal the payment carries (null: none): the
+                // baseline of the next attempt.
+                knownErrorCode = event.status.errorCode
+                errorCodeKnown = true
                 // A request without an answer, then a new refusal on the payment: it arrived and was
                 // refused. One the payment already carried before this attempt is not news.
                 val code = event.status.errorCode
                 if (unansweredKey != null && !sawProcessing && event.status.status == "pending" &&
-                    code != null && code != errorCodeBeforeAttempt && _screen.value is SheetScreen.Pending
+                    errorCodeBeforeAttemptKnown && code != null && code != errorCodeBeforeAttempt &&
+                    _screen.value is SheetScreen.Pending
                 ) {
                     lastTransaction = lastTransaction?.copy(status = "pending", errorCode = code)
+                    if (onPayerOtpRefusal(event.status, PaymentWatcher.attemptEnded(event.status, lang))) return
                     showFailed(PaymentWatcher.attemptEnded(event.status, lang))
                     return
                 }
@@ -1181,6 +1477,8 @@ class CheckoutController internal constructor(
             is WatchEvent.Failed -> {
                 event.error.declineCode?.let { knownErrorCode = it }
                 event.status?.let { lastTransaction = lastTransaction?.copy(status = it.status) }
+                val status = event.status
+                if (status != null && onPayerOtpRefusal(status, event.error)) return
                 // While a client session completes, its answer decides (a success wins).
                 if (completions > 0 && event.status?.status == "pending") heldFailure = event.error else showFailed(event.error)
             }
@@ -1327,7 +1625,7 @@ class CheckoutController internal constructor(
     // A screen where an attempt runs (its Pay pressed, or watched).
     private val SheetScreen.watching: Boolean
         get() = this is SheetScreen.Form && busy || this is SheetScreen.Approval || this is SheetScreen.Ussd ||
-            this is SheetScreen.Pending || this is SheetScreen.Step
+            this is SheetScreen.Pending || this is SheetScreen.Step || this is SheetScreen.PayerOtp && busy
 
     /**
      * The screen that presented the sheet went away for good (activity
@@ -1336,7 +1634,10 @@ class CheckoutController internal constructor(
     fun hostGone() {
         if (finished) return
         // The payer's own cancel is on its way (it outlives the host): it settles the sheet.
-        if (cancelling != null) return
+        if (cancelling != null) {
+            hostLeftDuringCancel = true
+            return
+        }
         val current = _screen.value
         settledResult(current)?.let {
             finish(it)
@@ -1394,9 +1695,16 @@ class CheckoutController internal constructor(
                 "failed" -> CheckoutResult.Failed(WajubError.of("payment_failed", lang), txn)
                 "expired" -> CheckoutResult.Failed(WajubError.of("session_expired", lang), txn)
                 else -> null
-            } ?: CheckoutResult.Cancelled(reason, null)
-            if (result is CheckoutResult.Complete) fire { callbacks.onSuccess?.invoke(result.payment) }
-            finish(result)
+            }
+            if (result == null && reason == CancelReason.PayerCancelled && !hostLeftDuringCancel) {
+                // Still pending, and not cancelled: the payer stays where they were.
+                cancelling = null
+                show(_screen.value)
+                return@launch
+            }
+            val settled = result ?: CheckoutResult.Cancelled(if (hostLeftDuringCancel) CancelReason.HostGone else reason, null)
+            if (settled is CheckoutResult.Complete) fire { callbacks.onSuccess?.invoke(settled.payment) }
+            finish(settled)
         }
     }
 
@@ -1437,6 +1745,7 @@ class CheckoutController internal constructor(
             is SheetScreen.Methods -> CheckoutState.INITIATED
             is SheetScreen.Form -> if (screen.busy) CheckoutState.PROCESSING else CheckoutState.COLLECTING_DETAILS
             is SheetScreen.Approval -> CheckoutState.APPROVAL_REQUIRED
+            is SheetScreen.PayerOtp -> if (screen.busy) CheckoutState.PROCESSING else CheckoutState.PAYER_OTP_REQUIRED
             is SheetScreen.Ussd -> CheckoutState.USSD_REQUIRED
             is SheetScreen.Step -> if (screen.busy) {
                 CheckoutState.VERIFYING
@@ -1471,7 +1780,12 @@ class CheckoutController internal constructor(
     }
 
     internal companion object {
+        // The card fields that hold digits only.
+        private val CARD_NUMBER_FIELDS = setOf("card.number", "cvv", "expiry_month", "expiry_year")
+
         const val RESEND_AFTER_MS: Long = 60_000L
+        private const val PAYER_OTP_ACTION = "payer_otp"
+        private const val OTP_ATTEMPTS_EXCEEDED = "otp_attempts_exceeded"
         const val UNANSWERED_AFTER_MS: Long = 60_000L
         private const val UNANSWERED_RECHECK_MS: Long = 5_000L
         private val BIRTHDAY = Regex("""^\d{4}-\d{2}-\d{2}$""")

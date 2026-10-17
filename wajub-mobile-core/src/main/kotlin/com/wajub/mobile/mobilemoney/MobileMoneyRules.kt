@@ -1,5 +1,6 @@
 package com.wajub.mobile.mobilemoney
 
+import com.wajub.mobile.model.PayerOtpInstructions
 import com.wajub.mobile.model.SessionChannel
 import com.wajub.mobile.model.WajubLanguage
 
@@ -19,19 +20,25 @@ data class OperatorChoice(
     /** The channel's `min_amount` / `max_amount`. */
     val minAmount: Double? = null,
     val maxAmount: Double? = null,
+    /** The logo as a PNG, when there is one. */
+    val logoPng: String? = null,
+    /** What the payer pays on this operator, when its price is its own (a fee that depends on it). */
+    val amountTotal: Double? = null,
+    /** Set when paying on this operator takes a code the payer generates in its menu first. */
+    val payerOtp: PayerOtpInstructions? = null,
 )
 
-/** A form problem found before submitting (errors.md §3.3). */
+/** A form problem found before submitting. */
 data class FormIssue(
     /** `phone_required`, `invalid_phone`, `operator_mismatch`, `operator_required`. */
     val code: String,
     /** Placeholders of the message (`detected`, `selected`). */
     val args: Map<String, String> = emptyMap(),
-    /** Whether it stops the payment (a sandbox mismatch only warns). */
+    /** Whether it stops the payment. */
     val blocking: Boolean = true,
 )
 
-/** The checkout's Mobile Money form rules (spec §6.1–6.4). */
+/** The Mobile Money form's rules: countries, operators, selection and checks. */
 object MobileMoneyRules {
     fun isMobileMoney(channel: SessionChannel): Boolean =
         channel.type.equals("mobile_money", true) || channel.type.equals("mobile", true)
@@ -71,6 +78,9 @@ object MobileMoneyRules {
                         badge = data.badge(op.operator, op.name),
                         minAmount = channel.minAmount,
                         maxAmount = channel.maxAmount,
+                        logoPng = op.logoPng?.takeIf { it.startsWith("https://") },
+                        // The operator's own price, else the aggregate's (all its operators agree).
+                        amountTotal = op.amountTotal ?: channel.amountTotal,
                     )
                 }
             } else {
@@ -86,30 +96,39 @@ object MobileMoneyRules {
                     badge = data.badge(id, name),
                     minAmount = channel.minAmount,
                     maxAmount = channel.maxAmount,
+                    logoPng = channel.logoPng?.takeIf { it.startsWith("https://") },
+                    amountTotal = channel.amountTotal,
+                    // Never announced on an aggregate: only a channel of its own asks for it.
+                    payerOtp = channel.payerOtp,
                 )
             }
         }
         return out.values.toList()
     }
 
-    /** A channel's name in the sheet's language (`name.fr` for French). */
+    /** A channel's name in the sheet's language. */
     fun channelName(channel: SessionChannel, language: WajubLanguage): String =
         if (language == WajubLanguage.Fr) channel.nameFr ?: channel.name else channel.name
 
     /**
      * The selection after the number changed: a payer's own pick stays; else a
-     * detected operator among [choiceIds] is selected; else [current], else the first.
+     * detected operator among [choiceIds] is selected; else [current], else the
+     * first operator that is not a wallet held whatever the operator (Wave, Express
+     * Union…), else the first.
      */
     fun selection(choiceIds: List<String>, current: String?, pickedByHand: Boolean, detected: String?): String? {
         if (pickedByHand && current != null) return current
         if (detected != null && detected in choiceIds) return detected
-        return current?.takeIf { it in choiceIds } ?: choiceIds.firstOrNull()
+        current?.takeIf { it in choiceIds }?.let { return it }
+        val independent = MobileMoney.data().operatorIndependentWallets
+        return choiceIds.firstOrNull { it !in independent } ?: choiceIds.firstOrNull()
     }
 
     /**
-     * Checks the form before submitting, in the web checkout's order:
+     * Checks the form before submitting, in this order:
      * `phone_required`, `invalid_phone`, `operator_mismatch`, `operator_required`.
-     * In sandbox a mismatch does not block (test prefixes follow no real plan).
+     * In a [sandbox] session a test number is valid and tests its own operator:
+     * picked on another operator, it is a mismatch, as in live.
      */
     fun validate(
         phone: String,
@@ -120,16 +139,11 @@ object MobileMoneyRules {
         sandbox: Boolean,
     ): FormIssue? {
         if (MobileMoney.sanitize(phone).isEmpty()) return FormIssue("phone_required")
-        if (!MobileMoney.isValid(phone, country)) return FormIssue("invalid_phone")
-        val detected = MobileMoney.detectOperator(phone, country)
+        if (!MobileMoney.isValid(phone, country, sandbox)) return FormIssue("invalid_phone")
+        val detected = MobileMoney.detectOperator(phone, country, sandbox)
         val independent = MobileMoney.data().operatorIndependentWallets
         if (detected != null && detected in choiceIds && selected != null && detected != selected && selected !in independent) {
-            val issue = FormIssue(
-                "operator_mismatch",
-                mapOf("detected" to label(detected), "selected" to label(selected)),
-                blocking = !sandbox,
-            )
-            if (issue.blocking) return issue
+            return FormIssue("operator_mismatch", mapOf("detected" to label(detected), "selected" to label(selected)))
         }
         if (selected == null) return FormIssue("operator_required")
         return null
@@ -145,11 +159,17 @@ object MobileMoneyRules {
         return if (pickedByHand || detected == selected) selected else null
     }
 
-    /** `data` of a Mobile Money charge, without `_client`, `return_url` and `altcha`. */
-    fun requestData(choice: OperatorChoice, phone: String, country: MobileMoneyCountry, pickedByHand: Boolean): Map<String, Any?> {
-        val detected = MobileMoney.detectOperator(phone, country)
+    /** The data of a Mobile Money payment, from the form; in a [sandbox] session a test number is sent as typed. */
+    fun requestData(
+        choice: OperatorChoice,
+        phone: String,
+        country: MobileMoneyCountry,
+        pickedByHand: Boolean,
+        sandbox: Boolean = false,
+    ): Map<String, Any?> {
+        val detected = MobileMoney.detectOperator(phone, country, sandbox)
         return buildMap {
-            put("phone", MobileMoney.e164(phone, country))
+            put("phone", MobileMoney.e164(phone, country, sandbox))
             put("country", country.code)
             operatorHint(choice.viaAggregate, choice.id, pickedByHand, detected)?.let { put("operator", it) }
         }

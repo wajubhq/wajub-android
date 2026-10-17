@@ -10,20 +10,8 @@ import com.pusher.client.connection.ConnectionStateChange
 import com.pusher.client.util.HttpChannelAuthorizer
 import com.wajub.mobile.model.EchoConfig
 
-/**
- * `PresentOptions.realtime`: another host for the socket (a self-hosted Reverb
- * or Soketi behind your own hostname), or no socket at all.
- */
-data class RealtimeOptions(
-    /** `false`: polling only. */
-    val enabled: Boolean = true,
-    val host: String? = null,
-    val port: Int? = null,
-    val tls: Boolean? = null,
-)
-
-/** Where the socket connects: `echo` of the session, with [RealtimeOptions] on top. */
-data class RealtimeEndpoint(
+/** Where the socket connects: the session's `echo`. */
+internal data class RealtimeEndpoint(
     val key: String,
     val host: String,
     val port: Int,
@@ -34,11 +22,9 @@ data class RealtimeEndpoint(
     companion object {
         /**
          * `ws_host` carries the scheme (`wss://` TLS, `ws://` plain), `ws_port`
-         * the port. Null — polling only — without `echo`, without a key, or
-         * when [options] turn realtime off.
+         * the port. Null — polling only — without `echo` or without a key.
          */
-        fun resolve(echo: EchoConfig?, options: RealtimeOptions? = null): RealtimeEndpoint? {
-            if (options?.enabled == false) return null
+        fun resolve(echo: EchoConfig?): RealtimeEndpoint? {
             if (echo == null || echo.key.isBlank()) return null
             val raw = echo.wsHost.trim()
             val scheme = raw.substringBefore("://", "").lowercase()
@@ -50,9 +36,9 @@ data class RealtimeEndpoint(
             }
             val endpoint = RealtimeEndpoint(
                 key = echo.key,
-                host = options?.host?.takeIf { it.isNotBlank() } ?: host,
-                port = options?.port ?: echo.wsPort,
-                tls = options?.tls ?: tls,
+                host = host,
+                port = echo.wsPort,
+                tls = tls,
                 channelPrefix = echo.channelPrefix,
             )
             return endpoint.takeIf { it.host.isNotBlank() }

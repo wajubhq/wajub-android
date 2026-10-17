@@ -73,8 +73,37 @@ internal class SheetStrings(
     val expiredTitle: String,
     val cancelledTitle: String,
     val endedTitle: String,
+    val payerOtpTitle: String,
+    val payerOtpDescription: String,
+    val payerOtpDial: String,
+    val copy: String,
+    val copied: String,
+    val payerOtpAmount: String,
+    val payerOtpStepsTitle: String,
+    /** When the operator gives no steps; `{amount}` is the exact amount. */
+    val payerOtpGenericSteps: List<String>,
+    /** Generic step 2 when no amount is given. */
+    val payerOtpGenericStepNoAmount: String,
+    val payerOtpCodeLabel: String,
+    val payerOtpSubmit: String,
+    val payerOtpChangeMethod: String,
+    val payerOtpSandbox: String,
+    val payerOtpApproval: String,
+    val payerOtpFormHint: String,
+    val payerOtpFormHintGeneric: String,
+    val noTriesLeft: String,
+    val oneTryLeft: String,
+    val triesLeft: String,
 ) {
     fun label(field: String): String = fieldLabels[field] ?: field
+
+    /** The codes the operator may still refuse. */
+    fun tries(count: Int): String =
+        when {
+            count <= 0 -> noTriesLeft
+            count == 1 -> oneTryLeft
+            else -> triesLeft.fill("count" to count)
+        }
 
     companion object {
         fun of(language: WajubLanguage): SheetStrings = if (language == WajubLanguage.Fr) FR else EN
@@ -163,6 +192,29 @@ internal class SheetStrings(
             expiredTitle = "Session expired",
             cancelledTitle = "Payment cancelled",
             endedTitle = "This payment has ended",
+            payerOtpTitle = "Generate your payment code",
+            payerOtpDescription = "Before you pay, your operator asks for a code you generate yourself from its menu, for the exact amount of the payment.",
+            payerOtpDial = "Code to dial",
+            copy = "Copy",
+            copied = "Copied",
+            payerOtpAmount = "Exact amount to enter",
+            payerOtpStepsTitle = "How to get your code",
+            payerOtpGenericSteps = listOf(
+                "Open your operator's Mobile Money menu (USSD code or app).",
+                "Generate a payment code for the exact amount: {amount}.",
+                "Enter the code you received below.",
+            ),
+            payerOtpGenericStepNoAmount = "Generate a payment code for the exact amount.",
+            payerOtpCodeLabel = "Payment code",
+            payerOtpSubmit = "Confirm payment",
+            payerOtpChangeMethod = "Use another payment method",
+            payerOtpSandbox = "Test mode: enter the code {code}. Any other code is refused.",
+            payerOtpApproval = "Code received. Your operator is processing the payment, this can take a moment.",
+            payerOtpFormHint = "For this payment, you will generate a code by dialing {ussd_code}: the next step guides you.",
+            payerOtpFormHintGeneric = "For this payment, you will generate a code from your operator's menu: the next step guides you.",
+            noTriesLeft = "No tries left.",
+            oneTryLeft = "1 try left.",
+            triesLeft = "{count} tries left.",
         )
 
         private val FR = SheetStrings(
@@ -249,6 +301,29 @@ internal class SheetStrings(
             expiredTitle = "Session expirée",
             cancelledTitle = "Paiement annulé",
             endedTitle = "Ce paiement est terminé",
+            payerOtpTitle = "Générez votre code de paiement",
+            payerOtpDescription = "Avant de payer, votre opérateur demande un code que vous générez vous-même depuis son menu, pour le montant exact du paiement.",
+            payerOtpDial = "Code à composer",
+            copy = "Copier",
+            copied = "Copié",
+            payerOtpAmount = "Montant exact à saisir",
+            payerOtpStepsTitle = "Comment obtenir votre code",
+            payerOtpGenericSteps = listOf(
+                "Ouvrez le menu Mobile Money de votre opérateur (code USSD ou application).",
+                "Générez un code de paiement pour le montant exact : {amount}.",
+                "Saisissez ci-dessous le code que vous avez reçu.",
+            ),
+            payerOtpGenericStepNoAmount = "Générez un code de paiement pour le montant exact.",
+            payerOtpCodeLabel = "Code de paiement",
+            payerOtpSubmit = "Valider le paiement",
+            payerOtpChangeMethod = "Changer de moyen de paiement",
+            payerOtpSandbox = "Mode test : saisissez le code {code}. Tout autre code est refusé.",
+            payerOtpApproval = "Code reçu. Votre opérateur traite le paiement, cela peut prendre quelques instants.",
+            payerOtpFormHint = "Pour ce paiement, vous générerez un code en composant {ussd_code} : l'étape suivante vous guide.",
+            payerOtpFormHintGeneric = "Pour ce paiement, vous générerez un code depuis le menu de votre opérateur : l'étape suivante vous guide.",
+            noTriesLeft = "Plus aucun essai possible.",
+            oneTryLeft = "Il vous reste 1 essai.",
+            triesLeft = "Il vous reste {count} essais.",
         )
     }
 }

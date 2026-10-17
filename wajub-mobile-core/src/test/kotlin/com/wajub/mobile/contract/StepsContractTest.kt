@@ -100,9 +100,15 @@ class StepsContractTest {
             val polls = api.count("GET /pay/status")
             controller.submitStep()
             runCurrent()
-            // `success` with a transaction still processing: waiting, not paid.
-            assertEquals(CheckoutState.PENDING, controller.state, fixture)
-            assertTrue(api.count("GET /pay/status") > polls, "watching")
+            val status = Fixtures.body("${kind.path}-verify-success").getJSONObject("transaction").getString("status")
+            if (status == "succeeded") {
+                // A step the provider settles at once (2.1): paid.
+                assertEquals(CheckoutState.SUCCESS, controller.state, fixture)
+            } else {
+                // `success` with a transaction still processing (2.0 answers): waiting, not paid.
+                assertEquals(CheckoutState.PENDING, controller.state, fixture)
+                assertTrue(api.count("GET /pay/status") > polls, "watching")
+            }
         }
         val paid = cmApi()
             .on("POST /pay/process", Fixtures.response("process-requires-otp"))
@@ -496,5 +502,118 @@ class StepsContractTest {
         assertEquals(2, api.count("GET /pay/status"), "at once, not at the next 5 s tick")
         assertEquals(CheckoutState.SUCCESS, controller.state)
         assertNull((controller.screen.value as? SheetScreen.Pending)?.url)
+    }
+
+    @Test
+    fun `CF-07 follows a chained step`() = runTest {
+        // A birthday, then a code the provider asks for: the OTP screen, then paid on the transaction's status.
+        val chained = cmApi()
+            .on("POST /pay/process", Fixtures.response("process-requires-birthday"))
+            .on("POST /pay/birthday/verify", Fixtures.response("birthday-verify-chained-otp"))
+            .on("POST /pay/otp/verify", Fixtures.response("otp-verify-success"))
+        val recorder = Recorder()
+        val controller = answered(chained, recorder)
+        assertEquals(CheckoutState.BIRTHDAY_REQUIRED, controller.state)
+        controller.setStepField("birthday", "1990-04-21")
+        controller.submitStep()
+        runCurrent()
+        val otp = assertIs<SheetScreen.Step>(controller.screen.value)
+        assertEquals(StepKind.Otp, otp.kind)
+        assertEquals(Fixtures.body("birthday-verify-chained-otp").getString("otp_id"), otp.stepId)
+        assertEquals(Fixtures.body("birthday-verify-chained-otp").getString("otp_masked_contact"), otp.hint)
+        assertNull(otp.attemptsRemaining, "a fresh attempt count")
+        assertEquals(CheckoutState.OTP_REQUIRED, controller.state)
+        assertTrue(recorder.events.none { it.startsWith("success:") }, "the birthday did not pay")
+        controller.setStepField("code", "123456")
+        controller.submitStep()
+        runCurrent()
+        assertEquals(otp.stepId, chained.lastBody("POST /pay/otp/verify").getString("otp_id"))
+        assertEquals(CheckoutState.SUCCESS, controller.state)
+
+        // A PIN, then a 3-D Secure page: onRedirect, the browser, PENDING.
+        val page = cmApi()
+            .on("POST /pay/process", Fixtures.response("process-requires-pin"))
+            .on("POST /pay/pin/verify", Fixtures.response("pin-verify-chained-redirect"))
+        val pageEvents = Recorder()
+        val pin = answered(page, pageEvents)
+        pin.setStepField("pin", "1234")
+        pin.submitStep()
+        runCurrent()
+        val url = Fixtures.body("pin-verify-chained-redirect").getString("confirm_url")
+        assertTrue("redirect:$url" in pageEvents.events, "${pageEvents.events}")
+        assertEquals(url, assertIs<SheetScreen.Pending>(pin.screen.value).url)
+        assertEquals(CheckoutState.PENDING, pin.state)
+
+        // A next step the sheet cannot take.
+        val odd = cmApi()
+            .on("POST /pay/process", Fixtures.response("process-requires-birthday"))
+            .on("POST /pay/birthday/verify", Fixtures.response("birthday-verify-chained-otp") { it.put("action", "confirm_magic") })
+        val magic = answered(odd)
+        magic.setStepField("birthday", "1990-04-21")
+        magic.submitStep()
+        runCurrent()
+        assertEquals("unsupported_action", assertIs<SheetScreen.Failed>(magic.screen.value).error.code)
+    }
+
+    // Arabic-Indic digits (U+0660…U+0669), as some keyboards type them.
+    private fun arabic(ascii: String): String = ascii.map { c -> if (c in '0'..'9') '\u0660' + (c - '0') else c }.joinToString("")
+
+    @Test
+    fun `CF-01 reads codes and dates typed in another script's digits`() = runTest {
+        for ((fixture, kind, values) in steps) {
+            val api = cmApi().on("POST /pay/process", Fixtures.response(fixture)).on("POST /pay/${kind.path}/verify", Fixtures.response("${kind.path}-verify-success"))
+            val controller = answered(api)
+            values.forEach { (k, v) -> controller.setStepField(k, arabic(v)) }
+            controller.submitStep()
+            runCurrent()
+            val body = api.lastBody("POST /pay/${kind.path}/verify")
+            values.forEach { (k, v) -> assertEquals(v, body.getString(k), "$fixture $k: sent in 0-9") }
+        }
+        // The sandbox 3-D Secure code too.
+        val threeDs = FakeApi()
+            .on("POST /pay/process", Fixtures.response("process-requires-3ds-sandbox"))
+            .on("POST /pay/3ds/verify", Fixtures.response("3ds-verify-202"))
+        val card = sandboxCard(threeDs)
+        card.setStepField("code", arabic("123456"))
+        card.submitStep()
+        runCurrent()
+        assertEquals("123456", threeDs.lastBody("POST /pay/3ds/verify").getString("code"))
+    }
+
+    @Test
+    fun `the sandbox card form reads digits typed in another script`() = runTest {
+        val api = FakeApi()
+            .on("GET /pay/session", Fixtures.response("session-sandbox-cm"))
+            .on("GET /pay/sdk-config", Fixtures.response("sdk-config-sandbox"))
+            .on("POST /pay/process", Fixtures.response("process-requires-3ds-sandbox"))
+            .on("GET /pay/status", Fixtures.response("status-processing"))
+        val (controller, _) = checkout(api, english)
+        controller.start()
+        runCurrent()
+        controller.selectMethod("card")
+        mapOf("card.number" to "4000 0566 5566 5556", "card_holder" to "Awa Ngono", "expiry_month" to "12", "expiry_year" to "30", "cvv" to "123")
+            .forEach { (k, v) -> controller.setCardField(k, arabic(v)) }
+        controller.payCard()
+        runCurrent()
+        val data = api.lastBody("POST /pay/process").getJSONObject("data")
+        assertEquals("4000056655665556", data.getString("card.number"))
+        assertEquals("12", data.getString("expiry_month"))
+        assertEquals("30", data.getString("expiry_year"))
+        assertEquals("123", data.getString("cvv"))
+        assertEquals("Awa Ngono", data.getString("card_holder"))
+    }
+
+    @Test
+    fun `CF-01 names the OTP contact only, or none`() = runTest {
+        for ((contact, expected) in listOf(
+            "080******78" to "080******78",
+            "" to null,
+            // An older answer gave the provider's sentence: its masked contact only.
+            "Please enter the OTP sent to 080******78" to "080******78",
+        )) {
+            val api = cmApi().on("POST /pay/process", Fixtures.response("process-requires-otp") { it.put("otp_masked_contact", contact) })
+            val step = assertIs<SheetScreen.Step>(answered(api).screen.value, contact)
+            assertEquals(expected, step.sentTo, "'$contact'")
+        }
     }
 }

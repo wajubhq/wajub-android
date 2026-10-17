@@ -14,17 +14,32 @@ data class MobileMoneyCountry(
     val name: String,
     /** `+237`. */
     val dialCode: String,
-    /** National digits a valid number has, or null to accept 7 to 15 digits. */
+    /** Digits a valid number has, or null to accept 7 to 15 digits. */
     val nationalNumberLength: Int?,
-    /** Côte d'Ivoire keeps its leading 0 in E.164. */
-    val keepsTrunkZero: Boolean,
+    /** The leading 0 is part of the number (Côte d'Ivoire, Benin…): the international format keeps it. */
+    val leadingZeroSignificant: Boolean,
     val placeholder: String,
     val placeholderFormatted: String,
     val operators: List<String>,
     val prefixRules: List<PrefixRule>,
+    /** What every valid number starts with (`0` in Côte d'Ivoire, `01` in Benin), or null. */
+    val numberPrefix: String? = null,
+    /** The mobile ranges a number typed without its leading 0 is read on. */
+    val mobilePrefixes: List<String> = emptyList(),
+    /** How numbers of an earlier, shorter plan read today, or null. */
+    val earlier: EarlierPlan? = null,
 )
 
 data class PrefixRule(val startsWith: List<String>, val operator: String)
+
+/**
+ * Numbers of an earlier plan: [length] digits starting with one of [map]'s
+ * keys read with that key replaced by its value (Benin: `96…` → `0196…`).
+ */
+data class EarlierPlan(val length: Int, val map: Map<String, String>)
+
+/** A sandbox test number: the operator it tests, and the number as it is sent. */
+data class SandboxTestNumber(val operator: String, val e164: String)
 
 /** A badge drawn when an operator has no logo, or its logo does not load. */
 data class BrandBadge(
@@ -36,7 +51,7 @@ data class BrandBadge(
     val background: String,
 )
 
-/** The shared Mobile Money tables (`mobile-money.json`, synced from the spec). */
+/** The Mobile Money tables: countries, dial codes, number lengths and operators. */
 class MobileMoneyData internal constructor(
     val schemaVersion: Int,
     val countries: Map<String, MobileMoneyCountry>,
@@ -47,6 +62,9 @@ class MobileMoneyData internal constructor(
     private val fallbackBackground: String,
     private val looseMin: Int,
     private val looseMax: Int,
+    // Sandbox test numbers: per country, per operator, the prefixes (digits only).
+    private val sandboxPrefixes: Map<String, Map<String, List<String>>> = emptyMap(),
+    private val outcomeSuffixes: List<String> = emptyList(),
 ) {
     fun country(code: String?): MobileMoneyCountry? = code?.let { countries[it.uppercase()] }
 
@@ -62,9 +80,26 @@ class MobileMoneyData internal constructor(
 
     internal fun looseValid(digits: Int): Boolean = digits in looseMin..looseMax
 
+    // The operator of the longest sandbox prefix [reading] starts with, when an outcome follows it.
+    internal fun sandboxOperator(country: String, reading: String): String? {
+        val byOperator = sandboxPrefixes[country.uppercase()] ?: return null
+        var best: Pair<String, Int>? = null
+        for ((operator, prefixes) in byOperator) {
+            for (prefix in prefixes) {
+                if (!reading.startsWith(prefix)) continue
+                val rest = reading.substring(prefix.length)
+                val outcome = outcomeSuffixes.any { suffix ->
+                    rest.endsWith(suffix) && rest.substring(0, rest.length - suffix.length).all { it == '0' }
+                }
+                if (outcome && (best == null || prefix.length > best.second)) best = operator to prefix.length
+            }
+        }
+        return best?.first
+    }
+
     companion object {
-        /** The only schema this SDK reads (spec MM-09). */
-        const val SUPPORTED_SCHEMA_VERSION: Int = 1
+        /** The only version of the tables this SDK reads. */
+        const val SUPPORTED_SCHEMA_VERSION: Int = 2
 
         fun parse(text: String): MobileMoneyData {
             val root = JSONObject(text)
@@ -81,12 +116,20 @@ class MobileMoneyData internal constructor(
                         name = c.str("name") ?: code,
                         dialCode = c.str("dial_code").orEmpty(),
                         nationalNumberLength = c.int("national_number_length"),
-                        keepsTrunkZero = c.str("e164_trunk_zero") == "keep",
+                        leadingZeroSignificant = c.str("leading_zero") == "significant",
                         placeholder = c.str("placeholder").orEmpty(),
                         placeholderFormatted = c.str("placeholder_formatted").orEmpty(),
                         operators = c.strings("operators"),
                         prefixRules = c.objects("prefix_rules").mapNotNull { rule ->
                             rule.str("operator")?.let { PrefixRule(rule.strings("starts_with"), it) }
+                        },
+                        numberPrefix = c.str("number_prefix")?.takeIf { it.isNotEmpty() },
+                        mobilePrefixes = c.strings("mobile_prefixes"),
+                        earlier = c.obj("earlier")?.let { e ->
+                            val length = e.int("length")
+                            val map = linkedMapOf<String, String>()
+                            e.obj("map")?.let { m -> m.keys().forEach { key -> m.str(key)?.let { map[key] = it } } }
+                            if (length == null || map.isEmpty()) null else EarlierPlan(length, map)
                         },
                     )
                 }
@@ -110,6 +153,15 @@ class MobileMoneyData internal constructor(
                 }
             }
             val loose = root.obj("loose_length")
+            val sandbox = root.obj("sandbox_test_numbers")
+            val sandboxPrefixes = linkedMapOf<String, Map<String, List<String>>>()
+            sandbox?.obj("prefixes")?.let { all ->
+                all.keys().forEach { country ->
+                    val byOperator = linkedMapOf<String, List<String>>()
+                    all.obj(country)?.let { ops -> ops.keys().forEach { op -> byOperator[op] = ops.strings(op).map { it.removePrefix("+") } } }
+                    sandboxPrefixes[country.uppercase()] = byOperator
+                }
+            }
             return MobileMoneyData(
                 schemaVersion = version,
                 countries = countries,
@@ -119,6 +171,8 @@ class MobileMoneyData internal constructor(
                 fallbackBackground = fallbackBackground,
                 looseMin = loose?.int("min") ?: 7,
                 looseMax = loose?.int("max") ?: 15,
+                sandboxPrefixes = sandboxPrefixes,
+                outcomeSuffixes = sandbox?.obj("outcome_suffixes")?.keys()?.asSequence()?.toList().orEmpty(),
             )
         }
 
@@ -128,9 +182,8 @@ class MobileMoneyData internal constructor(
 }
 
 /**
- * The checkout's Mobile Money rules (spec §6): number clean-up, validity,
- * operator detection, E.164 and the as-you-type format — the algorithms of
- * `mobile-money.json`, applied to its tables.
+ * The Mobile Money number rules: clean-up, validity, operator detection,
+ * international format and the as-you-type format.
  */
 object MobileMoney {
     private const val RESOURCE = "/com/wajub/mobile/mobile-money.json"
@@ -148,39 +201,138 @@ object MobileMoney {
             }
         }
 
-    /** Digits only: every character but 0-9 is dropped (a `+` too). */
-    fun sanitize(input: String): String = input.filter { it in '0'..'9' }
-
-    /** The number without its dial code and without leading zeros. */
-    fun nationalDigits(input: String, country: MobileMoneyCountry): String {
-        var digits = sanitize(input)
-        val dial = sanitize(country.dialCode)
-        if (dial.isNotEmpty() && digits.startsWith(dial)) digits = digits.removePrefix(dial)
-        return digits.trimStart('0')
-    }
-
-    fun isValid(input: String, country: MobileMoneyCountry): Boolean {
-        val length = country.nationalNumberLength
-        return if (length != null) {
-            nationalDigits(input, country).length == length
-        } else {
-            data().looseValid(sanitize(input).length)
+    /** Digits only, as 0-9 whatever script they were typed in; everything else is dropped (a `+` too). */
+    fun sanitize(input: String): String = buildString {
+        // By code point: some scripts' digits lie outside the BMP (Adlam, U+1E950…).
+        input.codePoints().forEach { cp ->
+            val digit = Character.digit(cp, 10)
+            if (digit >= 0) append('0' + digit)
         }
     }
 
-    /** The operator the number's prefix names, or null. */
-    fun detectOperator(input: String, country: MobileMoneyCountry): String? {
+    // The digits after the dial code, and whether the number is another country's
+    // (written with `+` or `00` and another dial code).
+    private class Typed(val digits: String, val foreign: Boolean)
+
+    private fun typed(input: String, country: MobileMoneyCountry, zerosAsDigits: Boolean = false): Typed {
+        val digits = sanitize(input)
+        val dial = sanitize(country.dialCode)
+        // Written internationally: `+` before the first digit, or the international prefix 00.
+        val plus = input.codePoints().filter { it == '+'.code || Character.digit(it, 10) >= 0 }.findFirst().orElse(-1) == '+'.code
+        val international = when {
+            plus -> digits
+            !zerosAsDigits && digits.startsWith("00") -> digits.substring(2)
+            else -> null
+        }
+        if (international != null) {
+            return if (dial.isNotEmpty() && international.startsWith(dial)) {
+                Typed(international.removePrefix(dial), foreign = false)
+            } else {
+                Typed(international, foreign = true)
+            }
+        }
+        // Written nationally: the dial code goes only when the digits are not already a
+        // complete national number (Ghana's `233 123 456` is one).
+        if (dial.isEmpty() || !digits.startsWith(dial)) return Typed(digits, foreign = false)
+        val asTyped = readNational(digits, country)
+        val complete = asTyped.length == country.nationalNumberLength && country.numberPrefix?.let { asTyped.startsWith(it) } != false
+        return Typed(if (complete) digits else digits.removePrefix(dial), foreign = false)
+    }
+
+    /** The digits as typed, without the dial code when the number is written with it (`+` or `00`). */
+    fun typedNationalDigits(input: String, country: MobileMoneyCountry): String = typed(input, country).digits
+
+    /** Whether the number is written with another country's dial code: it cannot be paid in [country]. */
+    fun isForeign(input: String, country: MobileMoneyCountry): Boolean = typed(input, country).foreign
+
+    /**
+     * The number as the country reads it today, without its dial code: an
+     * earlier plan's number in its new form (Benin `96 12 34 56` → `0196123456`),
+     * the leading 0 kept where it is part of the number (and given back to a
+     * mobile number typed without it), dropped elsewhere. Another country's
+     * number stays as written.
+     */
+    fun nationalDigits(input: String, country: MobileMoneyCountry): String {
+        val t = typed(input, country)
+        return if (t.foreign) t.digits else readNational(t.digits, country)
+    }
+
+    // Typed national digits as the country reads them: an earlier plan's form, then its leading 0.
+    private fun readNational(typed: String, country: MobileMoneyCountry): String {
+        var digits = typed
+        val earlier = country.earlier
+        if (earlier != null && digits.length == earlier.length) {
+            earlier.map.keys.filter { digits.startsWith(it) }.maxByOrNull { it.length }?.let { key ->
+                digits = earlier.map.getValue(key) + digits.substring(key.length)
+            }
+        }
+        if (!country.leadingZeroSignificant) return digits.trimStart('0')
+        if (!digits.startsWith("0")) {
+            val withZero = "0$digits"
+            if (withZero.length == country.nationalNumberLength && country.mobilePrefixes.any { withZero.startsWith(it) }) return withZero
+        }
+        return digits
+    }
+
+    /** Whether the number is complete for [country]; in a [sandbox] session, a sandbox test number is. */
+    fun isValid(input: String, country: MobileMoneyCountry, sandbox: Boolean = false): Boolean {
+        if (sandbox && sandboxTestNumber(input, country) != null) return true
+        if (isForeign(input, country)) return false
+        val length = country.nationalNumberLength ?: return data().looseValid(sanitize(input).length)
         val digits = nationalDigits(input, country)
+        return digits.length == length && country.numberPrefix?.let { digits.startsWith(it) } != false
+    }
+
+    /**
+     * The operator the number belongs to, or null; in a [sandbox] session, the
+     * operator a sandbox test number tests.
+     */
+    fun detectOperator(input: String, country: MobileMoneyCountry, sandbox: Boolean = false): String? {
+        if (sandbox) sandboxTestNumber(input, country)?.let { return it.operator }
+        if (isForeign(input, country)) return null
+        var digits = nationalDigits(input, country)
         if (digits.isEmpty()) return null
+        val prefix = country.numberPrefix
+        // A number still being typed without its 0 names its operator as it is typed.
+        if (prefix != null && !digits.startsWith("0")) {
+            val key = country.earlier?.map?.keys?.filter { digits.startsWith(it) }?.maxByOrNull { it.length }
+            digits = if (key != null) country.earlier.map.getValue(key) + digits.substring(key.length) else "0$digits"
+        }
         val independent = data().operatorIndependentWallets
         return country.prefixRules.firstOrNull { rule -> rule.startsWith.any { digits.startsWith(it) } }
             ?.operator
             ?.takeIf { it !in independent }
     }
 
-    /** `+237677123456`; Côte d'Ivoire keeps its leading 0 (`+2250701020304`). */
-    fun e164(input: String, country: MobileMoneyCountry): String =
-        country.dialCode + (if (country.keepsTrunkZero) "0" else "") + nationalDigits(input, country)
+    /**
+     * The number in international format (`+237677123456`, `+2250707000000`);
+     * another country's as written; a [sandbox] test number as it was read.
+     */
+    fun e164(input: String, country: MobileMoneyCountry, sandbox: Boolean = false): String {
+        if (sandbox) sandboxTestNumber(input, country)?.let { return it.e164 }
+        val t = typed(input, country)
+        if (t.foreign) return "+" + t.digits
+        return country.dialCode + readNational(t.digits, country)
+    }
+
+    /** A sandbox test number of [country], or null (it means something in a sandbox session only). */
+    fun sandboxTestNumber(input: String, country: MobileMoneyCountry): SandboxTestNumber? {
+        val dial = sanitize(country.dialCode)
+        val readings = buildList {
+            val t = typed(input, country)
+            if (!t.foreign) {
+                add(dial + readNational(t.digits, country))
+                add(dial + t.digits)
+            }
+            // A leading 00 read as typed digits (Gabon's Airtel `0 000000`).
+            val asDigits = typed(input, country, zerosAsDigits = true)
+            if (!asDigits.foreign) add(dial + asDigits.digits)
+        }
+        for (reading in readings) {
+            data().sandboxOperator(country.code, reading)?.let { return SandboxTestNumber(it, "+$reading") }
+        }
+        return null
+    }
 
     /** Digits grouped by two: `671234567` → `67 12 34 56 7` (at most 15 digits). */
     fun formatAsYouType(input: String): String = sanitize(input).take(15).chunked(2).joinToString(" ")

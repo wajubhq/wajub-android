@@ -6,16 +6,13 @@ import java.util.UUID
 data class ProcessRequest(
     /** The channel slug: `cm.mobile`, `ci.wave`, `card`, `ci.djamo`… */
     val channel: String,
-    /** `data` of the request; `_client` is added by the SDK. */
+    /** What the payer entered (`phone`, `country`, `operator`…). */
     val data: Map<String, Any?> = emptyMap(),
-    /**
-     * Sent as `Idempotency-Key`, and reused by the automatic retries of this
-     * request. One per press of Pay: a new request gets a new key.
-     */
+    /** Pass the same key to retry the same payment. */
     val idempotencyKey: String = UUID.randomUUID().toString(),
 )
 
-/** What the API asks next, when a `202` carries nothing for the payer to do. */
+/** What happens next while a payment is under way. */
 enum class ProcessingKind(val value: String) {
     /** A push was sent to the phone: approve it there. */
     Approval("approval"),
@@ -27,50 +24,50 @@ enum class ProcessingKind(val value: String) {
     Pending("pending"),
 }
 
-/**
- * One `/pay/process` (or client-session) answer, mapped on its HTTP status,
- * `action` and `transaction.status` — never on `message` (spec §9).
- */
+/** The answer to a payment request. */
 sealed class ProcessOutcome {
     /** Paid. */
     data class Complete(val transaction: SessionTransaction) : ProcessOutcome()
 
     /**
-     * Under way: watch the status. [transaction] is null when the outcome is
-     * unknown (a timeout, a 5xx, or a charge already in flight).
+     * Under way: watch the payment. [transaction] is null when the outcome is
+     * not known yet.
      */
     data class Processing(
         val transaction: SessionTransaction?,
-        /** English, from `processing_context.payer_instruction`. */
+        /** The provider's instruction for the payer, in English. */
         val instruction: String? = null,
         val kind: ProcessingKind = ProcessingKind.Pending,
-        /**
-         * When no answer came back at all: the clock time (ms) the last try was
-         * sent. A status still `pending` 60 s later means the request most
-         * likely never arrived: pay again with the same Idempotency-Key.
-         */
+        /** When no answer came back at all: the clock time (ms) of the last try. */
         val unansweredSince: Long? = null,
     ) : ProcessOutcome()
 
-    /** The payer has something to do: a page to open, or a confirmation step. */
+    /**
+     * The payer has something to do: a page to open, a confirmation step, or
+     * (`payer_otp`) a code to generate in the operator's menu, nothing being charged yet.
+     */
     data class RequiresAction(
-        /** The API's `action`: `redirect`, `confirm`, `confirm_3ds`, `confirm_otp`…, `client_session`. */
+        /** What to do: `redirect`, `confirm`, `confirm_3ds`, `confirm_otp`…, `client_session`, `payer_otp`. */
         val action: String,
-        /** `confirm_url`, or the client session's `hosted_url`. */
+        /** The page to open. */
         val url: String? = null,
-        /** `otp_id`, `pin_id`, `phone_id`, `birthday_id`, `address_id`, `three_ds_id`. */
+        /** The step's id, for [com.wajub.mobile.WajubSession.verifyStep]. */
         val stepId: String? = null,
-        /** `otp_masked_contact`, `*_instruction` or `masked_email`. */
+        /** Where the code was sent, or the provider's instruction (in English). */
         val hint: String? = null,
         val clientSession: ClientSession? = null,
         val transaction: SessionTransaction? = null,
-        /** `three_ds_timeout`, seconds. */
+        /** Seconds the sandbox 3-D Secure code is valid for. */
         val timeoutSeconds: Int? = null,
+        /**
+         * With `payer_otp`: how the payer gets the code. Then pay again with a
+         * new [ProcessRequest]: the same channel and data, plus the code as `otp`.
+         */
+        val payerOtp: PayerOtpInstructions? = null,
     ) : ProcessOutcome() {
         /**
-         * The confirmation step this action asks for, or null for a page to open.
-         * `confirm_3ds` is the sandbox code step ([StepKind.ThreeDs]) when it comes
-         * with a `three_ds_id` and no page, 3-D Secure in the browser otherwise.
+         * The confirmation step this action asks for, or null for a page to open
+         * (3-D Secure is a step only for the sandbox code).
          */
         val step: StepKind?
             get() = StepKind.ofAction(action)?.takeIf { it != StepKind.ThreeDs || (url == null && stepId != null) }
@@ -79,16 +76,19 @@ sealed class ProcessOutcome {
     data class Failed(
         val error: WajubError,
         val transaction: SessionTransaction? = null,
-    ) : ProcessOutcome()
+    ) : ProcessOutcome() {
+        // An answer that charged nothing (the payer's own code asked for without its instructions):
+        // the attempt has not started.
+        internal var chargedNothing: Boolean = false
+    }
 }
 
-/** The payer confirmation steps (spec §10) and the sandbox 3-D Secure code. */
+/** The confirmation steps, and the sandbox 3-D Secure code. */
 enum class StepKind(
-    /** The endpoint's segment: `/pay/{path}/verify`. */
+    /** The step's short name: `otp`, `pin`, `phone`, `birthday`, `address`, `3ds`. */
     val path: String,
-    /** The id key of the 202 and of the verify body. */
-    val idKey: String,
-    /** The fields the payer enters, as the verify body names them. */
+    internal val idKey: String,
+    /** The fields the payer enters. */
     val fields: List<String>,
 ) {
     Otp("otp", "otp_id", listOf("code")),
@@ -97,7 +97,7 @@ enum class StepKind(
     Birthday("birthday", "birthday_id", listOf("birthday")),
     Address("address", "address_id", listOf("address", "city", "state", "zip_code")),
 
-    /** Sandbox email code: `/pay/3ds/verify {three_ds_id, code}`, `/pay/3ds/send`. */
+    /** The sandbox 3-D Secure code, sent by email. */
     ThreeDs("3ds", "three_ds_id", listOf("code")),
     ;
 
@@ -118,10 +118,15 @@ enum class StepKind(
 /** The answer to a confirmation step. */
 sealed class StepResult {
     /**
-     * Accepted. [transaction] (null for 3-D Secure) decides: `succeeded` is
-     * paid, anything else is still to watch.
+     * Accepted. [next], when set, is the provider's next step (another code, a
+     * page) to follow as a payment answer; otherwise [transaction] (null for
+     * 3-D Secure) decides: `succeeded` is paid, anything else is still to watch.
      */
-    data class Accepted(val transaction: SessionTransaction?) : StepResult()
+    data class Accepted(
+        val transaction: SessionTransaction?,
+        /** A [ProcessOutcome.RequiresAction], or [ProcessOutcome.Failed] (`unsupported_action`). */
+        val next: ProcessOutcome? = null,
+    ) : StepResult()
 
     /**
      * Refused. [canRetryHere]: a wrong value with attempts left — stay on the
@@ -133,6 +138,6 @@ sealed class StepResult {
         val canRetryHere: Boolean,
     ) : StepResult()
 
-    /** A 422: the fields in [WajubError.details] need fixing. */
+    /** The fields in [WajubError.details] need fixing. */
     data class Invalid(val error: WajubError) : StepResult()
 }
